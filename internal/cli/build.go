@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -62,6 +63,22 @@ func (cli *CLI) BuildServices(ctx context.Context, project *composetypes.Project
 	}
 
 	composeService := composev2.NewComposeService(dockerCli)
+
+	// Make secret file paths absolute.
+	for i, s := range project.Services {
+		if s.Build != nil {
+			for j, secret := range s.Build.Secrets {
+				if secret.Source != "" {
+					absPath, err := filepath.Abs(secret.Source)
+					if err != nil {
+						return fmt.Errorf("get absolute path for secret '%s': %w", secret.Source, err)
+					}
+					project.Services[i].Build.Secrets[j].Source = absPath
+				}
+			}
+		}
+	}
+
 	buildOpts := composeapi.BuildOptions{
 		Args:     composetypes.NewMappingWithEquals(opts.BuildArgs),
 		Check:    opts.Check,
