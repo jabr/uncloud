@@ -660,6 +660,13 @@ func (s *Server) CreateServiceContainer(
 		return nil, status.Errorf(codes.Internal, "inject configs: %v", err)
 	}
 
+	// Inject secrets into the created container
+	if err = s.injectSecrets(ctx, resp.ID, spec.Secrets, spec.Container.SecretMounts); err != nil {
+		// Remove the container if secret injection fails
+		_ = s.client.ContainerRemove(ctx, resp.ID, container.RemoveOptions{RemoveVolumes: true})
+		return nil, status.Errorf(codes.Internal, "inject secrets: %v", err)
+	}
+
 	respBytes, err := json.Marshal(resp)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "marshal response: %v", err)
@@ -734,6 +741,69 @@ func ToDockerMounts(volumes []api.VolumeSpec, mounts []api.VolumeMount) ([]mount
 	}
 
 	return dockerMounts, nil
+}
+
+// injectSecrets writes secret content directly into the container.
+// It processes SecretSpecs and SecretMounts to mount secret content into the container filesystem.
+func (s *Server) injectSecrets(ctx context.Context, containerID string, secrets []api.SecretSpec, mounts []api.SecretMount) error {
+	if len(secrets) == 0 || len(mounts) == 0 {
+		return nil
+	}
+
+	if err := api.ValidateSecretsAndMounts(secrets, mounts); err != nil {
+		return fmt.Errorf("validate secrets and mounts: %w", err)
+	}
+
+	// Create a map of secret name to secret spec for quick lookup
+	secretMap := make(map[string]api.SecretSpec)
+	for _, secret := range secrets {
+		secretMap[secret.Name] = secret
+	}
+
+	// Process each secret mount
+	for _, m := range mounts {
+		secret, exists := secretMap[m.SecretName]
+		if !exists {
+			return fmt.Errorf("secret mount references a secret that doesn't exist: '%s'", m.SecretName)
+		}
+
+		// Determine target path in container
+		targetPath := m.ContainerPath
+		if targetPath == "" {
+			// This is the default from the Compose spec
+			targetPath = filepath.Join("/run/secrets", m.SecretName)
+		}
+
+		// Determine file mode
+		fileMode := os.FileMode(0o400) // Default permissions for secrets are stricter
+		if m.Mode != nil {
+			fileMode = *m.Mode
+		}
+
+		uid, err := m.GetNumericUid()
+		if err != nil {
+			return fmt.Errorf("invalid Uid: %w", err)
+		}
+
+		gid, err := m.GetNumericGid()
+		if err != nil {
+			return fmt.Errorf("invalid Gid: %w", err)
+		}
+
+		// Copy the secret content directly into the container
+		if err := s.copyContentToContainer(
+			ctx, containerID, secret.Content, targetPath, uid, gid, fileMode,
+		); err != nil {
+			return fmt.Errorf("copy secret file '%s' to container: %w", secret.Name, err)
+		}
+
+		slog.Debug("Injected secret into container",
+			"secret", secret.Name,
+			"container", containerID[:12],
+			"target", targetPath)
+	}
+
+	return nil
 }
 
 // injectConfigs writes config content directly into the container.
