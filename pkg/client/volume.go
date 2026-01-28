@@ -2,7 +2,6 @@ package client
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/containerd/errdefs"
@@ -63,19 +62,14 @@ func (cli *Client) ListVolumes(ctx context.Context, filter *api.VolumeFilter) ([
 		return nil, fmt.Errorf("create request context to broadcast to all machines: %w", err)
 	}
 
-	optsBytes, err := json.Marshal(volume.ListOptions{})
-	if err != nil {
-		return nil, fmt.Errorf("marshal options: %w", err)
-	}
-
-	machineVolumes, err := cli.Docker.GRPCClient.ListVolumes(mctx, &pb.ListVolumesRequest{Options: optsBytes})
+	machineVolumes, err := cli.Docker.ListVolumes(mctx, volume.ListOptions{})
 	if err != nil {
 		return nil, err
 	}
 
 	var volumes []api.MachineVolume
 	// Process responses from all machines.
-	for _, mv := range machineVolumes.Messages {
+	for _, mv := range machineVolumes {
 		if mv.Metadata == nil {
 			tui.PrintWarning("metadata is missing in response from unknown server")
 			continue
@@ -88,6 +82,9 @@ func (cli *Client) ListVolumes(ctx context.Context, filter *api.VolumeFilter) ([
 
 		machineID := mv.Metadata.MachineId
 		machineName := mv.Metadata.MachineName
+		if machineName == "" {
+			machineName = mv.Metadata.Machine
+		}
 
 		if machineID == "" {
 			// We need the machine ID to construct the MachineVolume response.
@@ -96,12 +93,7 @@ func (cli *Client) ListVolumes(ctx context.Context, filter *api.VolumeFilter) ([
 			continue
 		}
 
-		var volResp volume.ListResponse
-		if err = json.Unmarshal(mv.Response, &volResp); err != nil {
-			return nil, fmt.Errorf("unmarshal volume response: %w", err)
-		}
-
-		for _, vol := range volResp.Volumes {
+		for _, vol := range mv.Response.Volumes {
 			volumes = append(volumes, api.MachineVolume{
 				MachineID:   machineID,
 				MachineName: machineName,
