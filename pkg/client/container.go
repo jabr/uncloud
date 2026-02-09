@@ -74,7 +74,7 @@ func (cli *Client) createServiceContainerWithPull(
 	resp.Name = containerName
 
 	// Proxy Docker gRPC requests to the selected machine.
-	ctx = proxyToMachine(ctx, machine.Machine)
+	ctx = cli.ProxyMachineContext(ctx, machine.Machine.Id)
 
 	pw := progress.ContextWriter(ctx)
 	eventID := cliprogress.NewContainerEventID(ctx, containerName, machine.Machine.Name)
@@ -289,7 +289,7 @@ func (cli *Client) StartContainer(ctx context.Context, serviceNameOrID, containe
 	if err != nil {
 		return fmt.Errorf("inspect machine '%s': %w", ctr.MachineID, err)
 	}
-	ctx = proxyToMachine(ctx, machine.Machine)
+	ctx = cli.ProxyMachineContext(ctx, machine.Machine.Id)
 
 	pw := progress.ContextWriter(ctx)
 	eventID := cliprogress.ContainerEventID(ctx, ctr.Container.ServiceSpec.Name, ctr.Container.ID, machine.Machine.Name)
@@ -318,7 +318,7 @@ func (cli *Client) StopContainer(
 	if err != nil {
 		return fmt.Errorf("inspect machine '%s': %w", ctr.MachineID, err)
 	}
-	ctx = proxyToMachine(ctx, machine.Machine)
+	ctx = cli.ProxyMachineContext(ctx, machine.Machine.Id)
 
 	pw := progress.ContextWriter(ctx)
 	eventID := cliprogress.ContainerEventID(ctx, ctr.Container.ServiceSpec.Name, ctr.Container.ID, machine.Machine.Name)
@@ -347,7 +347,7 @@ func (cli *Client) RemoveContainer(
 	if err != nil {
 		return fmt.Errorf("inspect machine '%s': %w", ctr.MachineID, err)
 	}
-	ctx = proxyToMachine(ctx, machine.Machine)
+	ctx = cli.ProxyMachineContext(ctx, machine.Machine.Id)
 
 	pw := progress.ContextWriter(ctx)
 	eventID := cliprogress.ContainerEventID(ctx, ctr.Container.ServiceSpec.Name, ctr.Container.ID, machine.Machine.Name)
@@ -393,7 +393,7 @@ func (cli *Client) ExecContainer(
 	}
 
 	// Proxy Docker gRPC requests to the machine hosting the container
-	ctx = proxyToMachine(ctx, machine.Machine)
+	ctx = cli.ProxyMachineContext(ctx, machine.Machine.Id)
 
 	// Execute the command in the container
 	exitCode, err := cli.Docker.ExecContainer(ctx, machinedocker.ExecConfig{
