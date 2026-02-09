@@ -73,7 +73,7 @@ func (cli *Client) ListVolumes(ctx context.Context, filter *api.VolumeFilter) ([
 
 		if mv.Metadata.Error != "" {
 			// TODO: return failed machines in the response.
-			tui.PrintWarning(fmt.Sprintf("failed to list volumes on machine %s: %s", mv.Metadata.Machine, mv.Metadata.Error))
+			tui.PrintWarning(fmt.Sprintf("failed to list volumes on machine %s: %s", mv.Metadata.MachineAddr, mv.Metadata.Error))
 			continue
 		}
 
@@ -81,12 +81,6 @@ func (cli *Client) ListVolumes(ctx context.Context, filter *api.VolumeFilter) ([
 		machineName := mv.Metadata.MachineName
 		if machineName == "" {
 			machineName = machineID
-		}
-
-		if mv.Metadata.Error != "" {
-			// TODO: return failed machines in the response.
-			PrintWarning(fmt.Sprintf("failed to list volumes on machine %s: %s", machineName, mv.Metadata.Error))
-			continue
 		}
 
 		for _, vol := range mv.Response.Volumes {
