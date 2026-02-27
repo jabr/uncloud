@@ -78,6 +78,12 @@ func runDeploy(ctx context.Context, uncli *cli.CLI, opts deployOptions) error {
 		return fmt.Errorf("load compose file(s): %w", err)
 	}
 
+	// Check for unsupported compose keys and display warnings
+	warnings := compose.CheckProjectWarnings(project)
+	for _, w := range warnings {
+		client.PrintWarning(w.String())
+	}
+
 	if len(opts.services) > 0 {
 		// Includes service dependencies by default. This is the default docker compose behavior.
 		project, err = project.WithSelectedServices(opts.services)
