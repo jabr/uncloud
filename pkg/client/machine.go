@@ -2,8 +2,11 @@ package client
 
 import (
 	"context"
-	"slices"
+	"fmt"
+	"strings"
+	"time"
 
+	"github.com/cenkalti/backoff/v4"
 	"github.com/psviderski/uncloud/internal/machine/api/pb"
 	"github.com/psviderski/uncloud/pkg/api"
 	"google.golang.org/grpc/codes"
@@ -12,6 +15,7 @@ import (
 )
 
 func (cli *Client) InspectMachine(ctx context.Context, nameOrID string) (*pb.MachineMember, error) {
+	// TODO: refactor to use MachineClient.InspectMachine.
 	machines, err := cli.ListMachines(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -32,17 +36,39 @@ func (cli *Client) ListMachines(ctx context.Context, filter *api.MachineFilter) 
 	if err != nil {
 		return nil, err
 	}
+	machines := api.MachineMembersList(resp.Machines)
 
-	machines := resp.Machines
+	if filter == nil {
+		return machines, nil
+	}
 
-	if filter != nil {
-		var matchedMachines api.MachineMembersList
-		for _, m := range machines {
-			if MachineMatchesFilter(m, filter) {
-				matchedMachines = append(matchedMachines, m)
+	// Apply the filter.
+	if len(filter.NamesOrIDs) > 0 {
+		var matched api.MachineMembersList
+		var notFound []string
+
+		for _, nameOrID := range filter.NamesOrIDs {
+			if m := machines.FindByNameOrID(nameOrID); m != nil {
+				matched = append(matched, m)
+			} else {
+				notFound = append(notFound, nameOrID)
 			}
 		}
-		machines = matchedMachines
+		machines = matched
+
+		if len(notFound) > 0 {
+			return nil, fmt.Errorf("machines not found: %s", strings.Join(notFound, ", "))
+		}
+	}
+
+	if filter.Available {
+		var available api.MachineMembersList
+		for _, m := range machines {
+			if m.State != pb.MachineMember_DOWN {
+				available = append(available, m)
+			}
+		}
+		machines = available
 	}
 
 	return machines, nil
@@ -77,22 +103,47 @@ func (cli *Client) RenameMachine(ctx context.Context, nameOrID, newName string) 
 	return cli.UpdateMachine(ctx, req)
 }
 
-func MachineMatchesFilter(machine *pb.MachineMember, filter *api.MachineFilter) bool {
-	if filter == nil {
-		return true
-	}
+// WaitMachineReady waits for the machine API on the connected machine to respond.
+func (cli *Client) WaitMachineReady(ctx context.Context, timeout time.Duration) error {
+	boff := backoff.WithContext(backoff.NewExponentialBackOff(
+		backoff.WithInitialInterval(100*time.Millisecond),
+		backoff.WithMaxInterval(1*time.Second),
+		backoff.WithMaxElapsedTime(timeout),
+	), ctx)
 
-	if filter.Available && machine.State == pb.MachineMember_DOWN {
-		return false
-	}
-
-	if len(filter.NamesOrIDs) > 0 {
-		if !slices.ContainsFunc(filter.NamesOrIDs, func(nameOrID string) bool {
-			return machine.Machine.Id == nameOrID || machine.Machine.Name == nameOrID
-		}) {
-			return false
+	inspect := func() error {
+		if _, err := cli.Inspect(ctx, &emptypb.Empty{}); err != nil {
+			return fmt.Errorf("inspect machine: %w", err)
 		}
+		return nil
 	}
+	return backoff.Retry(inspect, boff)
+}
 
-	return true
+// WaitClusterReady waits for the connected machine to be ready to server cluster requests.
+func (cli *Client) WaitClusterReady(ctx context.Context, timeout time.Duration) error {
+	// Backoff is not really needed here as the default service config for the gRPC client is already
+	// doing retries with backoff for Unavailable errors. However, it's still convenient to use backoff
+	// to control the overall timeout for the operation.
+	boff := backoff.WithContext(backoff.NewExponentialBackOff(
+		backoff.WithInitialInterval(100*time.Millisecond),
+		backoff.WithMaxInterval(1*time.Second),
+		backoff.WithMaxElapsedTime(timeout),
+	), ctx)
+
+	listMachines := func() error {
+		_, err := cli.ListMachines(ctx, nil)
+		if err != nil {
+			if s, ok := status.FromError(err); ok &&
+				// TODO: remove FailedPrecondition after releading 0.17.
+				(s.Code() == codes.Unavailable || s.Code() == codes.FailedPrecondition) {
+				// Machine is not ready yet, retry.
+				return err
+			}
+			// Other non-Unavailable errors should not be retried.
+			return backoff.Permanent(err)
+		}
+		return nil
+	}
+	return backoff.Retry(listMachines, boff)
 }

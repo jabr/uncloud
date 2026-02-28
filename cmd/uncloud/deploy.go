@@ -14,6 +14,7 @@ import (
 	"github.com/psviderski/uncloud/pkg/client"
 	"github.com/psviderski/uncloud/pkg/client/compose"
 	"github.com/psviderski/uncloud/pkg/client/deploy"
+	"github.com/psviderski/uncloud/pkg/client/deploy/operation"
 	"github.com/spf13/cobra"
 )
 
@@ -42,6 +43,7 @@ func NewDeployCommand() *cobra.Command {
 
 			return runDeploy(cmd.Context(), uncli, opts)
 		},
+		GroupID: "service",
 	}
 
 	cmd.Flags().StringArrayVar(&opts.BuildServicesOptions.BuildArgs, "build-arg", nil,
@@ -197,7 +199,7 @@ func runDeploy(ctx context.Context, uncli *cli.CLI, opts deployOptions) error {
 	}, uncli.ProgressOut(), "Deploying services")
 }
 
-func printPlan(ctx context.Context, cli *client.Client, plan deploy.SequenceOperation) error {
+func printPlan(ctx context.Context, cli *client.Client, plan operation.SequenceOperation) error {
 	for _, op := range plan.Operations {
 		svcPlan, ok := op.(*deploy.Plan)
 		if !ok {

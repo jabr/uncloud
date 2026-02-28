@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -49,7 +50,7 @@ func (cli *Client) InspectRemoteImage(ctx context.Context, id string) ([]api.Mac
 // it lists images on all machines.
 func (cli *Client) ListImages(ctx context.Context, filter api.ImageFilter) ([]api.MachineImages, error) {
 	// Broadcast the image list request to the specified machines or all machines if none specified.
-	listCtx, machines, err := api.ProxyMachinesContext(ctx, cli, filter.Machines)
+	listCtx, machines, err := cli.ProxyMachinesContext(ctx, filter.Machines)
 	if err != nil {
 		return nil, fmt.Errorf("create request context to broadcast to machines: %w", err)
 	}
@@ -106,7 +107,7 @@ func (cli *Client) ListImages(ctx context.Context, filter api.ImageFilter) ([]ap
 func (cli *Client) RemoveImage(
 	ctx context.Context, image string, opts image.RemoveOptions, machines []string,
 ) ([]api.MachineRemoveImageResponse, error) {
-	listCtx, _, err := api.ProxyMachinesContext(ctx, cli, machines)
+	listCtx, _, err := cli.ProxyMachinesContext(ctx, machines)
 	if err != nil {
 		return nil, fmt.Errorf("create request context to broadcast to machines: %w", err)
 	}
@@ -145,7 +146,7 @@ func (cli *Client) RemoveImage(
 func (cli *Client) PullImage(
 	ctx context.Context, imageName string, opts image.PullOptions, machines []string,
 ) (<-chan api.MachinePullImageMessage, error) {
-	listCtx, _, err := api.ProxyMachinesContext(ctx, cli, machines)
+	listCtx, _, err := cli.ProxyMachinesContext(ctx, machines)
 	if err != nil {
 		return nil, fmt.Errorf("create request context to broadcast to machines: %w", err)
 	}
@@ -210,7 +211,7 @@ func (cli *Client) PullImage(
 func (cli *Client) PruneImages(
 	ctx context.Context, filtersArgs filters.Args, machines []string,
 ) ([]api.MachinePruneImagesResponse, error) {
-	listCtx, _, err := api.ProxyMachinesContext(ctx, cli, machines)
+	listCtx, _, err := cli.ProxyMachinesContext(ctx, machines)
 	if err != nil {
 		return nil, fmt.Errorf("create request context to broadcast to machines: %w", err)
 	}
@@ -290,18 +291,6 @@ func (cli *Client) PushImage(ctx context.Context, image string, opts PushImageOp
 		})
 		if err != nil {
 			return fmt.Errorf("list machines: %w", err)
-		}
-
-		// Check if all specified machines were found.
-		if len(machineMembers) != len(opts.Machines) {
-			var notFound []string
-			for _, nameOrID := range opts.Machines {
-				if machineMembers.FindByNameOrID(nameOrID) == nil {
-					notFound = append(notFound, nameOrID)
-				}
-			}
-
-			return fmt.Errorf("machines not found: %s", strings.Join(notFound, ", "))
 		}
 
 		for _, mm := range machineMembers {
@@ -518,14 +507,25 @@ func newUnregistryProxy(
 	return p, nil
 }
 
-// isDockerVirtualised checks if Docker is running in a virtualised environment like Docker Desktop on macOS.
+// isDockerVirtualised checks if Docker is running in a virtualised environment like Docker/Rancher Desktop or Colima.
+// On macOS, Docker always requires a VM, so it returns true unless OrbStack is detected (which handles host networking
+// natively). On other platforms, it checks for known virtualised Docker hostnames.
 func isDockerVirtualised(ctx context.Context, dockerCli *docker.Client) (bool, error) {
 	info, err := dockerCli.Info(ctx)
 	if err != nil {
 		return false, fmt.Errorf("get Docker info: %w", err)
 	}
 
-	virtualisedHostnames := []string{"docker-desktop", "colima"}
+	// On macOS, Docker always runs in a VM. OrbStack is the only known exception that doesn't need a proxy.
+	if runtime.GOOS == "darwin" {
+		if info.Name == "orbstack" {
+			return false, nil
+		}
+		return true, nil
+	}
+
+	// On other platforms, check for known virtualised Docker environments.
+	virtualisedHostnames := []string{"docker-desktop", "rancher-desktop", "colima"}
 	for _, name := range virtualisedHostnames {
 		if strings.Contains(strings.ToLower(info.Name), name) {
 			return true, nil
@@ -560,6 +560,9 @@ func runDockerVMProxyContainer(ctx context.Context, dockerCli *docker.Client, ta
 		},
 		ExposedPorts: nat.PortSet{
 			containerPort: {},
+		},
+		Labels: map[string]string{
+			api.LabelManaged: "",
 		},
 	}
 

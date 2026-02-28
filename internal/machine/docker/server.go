@@ -33,6 +33,7 @@ import (
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/docker/go-connections/nat"
+	"github.com/docker/go-units"
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
@@ -47,6 +48,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 var fullDockerIDRegex = regexp.MustCompile(`^[a-f0-9]{64}$`)
@@ -626,6 +628,22 @@ func (s *Server) CreateServiceContainer(
 	if spec.Mode == "" {
 		config.Labels[api.LabelServiceMode] = api.ServiceModeReplicated
 	}
+	if hc := spec.Container.Healthcheck; hc != nil {
+		if hc.Disable {
+			config.Healthcheck = &container.HealthConfig{
+				Test: []string{"NONE"},
+			}
+		} else {
+			config.Healthcheck = &container.HealthConfig{
+				Test:          hc.Test,
+				Interval:      hc.Interval,
+				Timeout:       hc.Timeout,
+				StartPeriod:   hc.StartPeriod,
+				StartInterval: hc.StartInterval,
+				Retries:       int(hc.Retries),
+			}
+		}
+	}
 
 	// TODO: do not set the ports as container labels once migrated to retrieve them from the spec in DB.
 	var err error
@@ -665,6 +683,8 @@ func (s *Server) CreateServiceContainer(
 		}
 	}
 	hostConfig := &container.HostConfig{
+		CapAdd:       spec.Container.CapAdd,
+		CapDrop:      spec.Container.CapDrop,
 		Binds:        spec.Container.Volumes,
 		Init:         spec.Container.Init,
 		Mounts:       mounts,
@@ -674,13 +694,16 @@ func (s *Server) CreateServiceContainer(
 			NanoCPUs:          spec.Container.Resources.CPU,
 			Memory:            spec.Container.Resources.Memory,
 			MemoryReservation: spec.Container.Resources.MemoryReservation,
+			Devices:           toDockerDevices(spec.Container.Resources.Devices),
 			DeviceRequests:    spec.Container.Resources.DeviceReservations,
+			Ulimits:           toDockerUlimits(spec.Container.Resources.Ulimits),
 		},
 		// Restart service containers if they exit or a machine restarts unless they are explicitly stopped.
 		// For one-off containers and batch jobs we plan to use a different service type/mode.
 		RestartPolicy: container.RestartPolicy{
 			Name: container.RestartPolicyUnlessStopped,
 		},
+		Sysctls: spec.Container.Sysctls,
 	}
 
 	// Configure the container to use the internal DNS server if it's available.
@@ -861,14 +884,17 @@ func (s *Server) injectConfigs(ctx context.Context, containerID string, configs 
 }
 
 // copyContentToContainer copies content directly to a file in the container using Docker's CopyToContainer API.
+// It will create any intermediate directories in the target path that don't exist.
 func (s *Server) copyContentToContainer(ctx context.Context, containerID string, content []byte, targetPath string, uid *uint64, gid *uint64, fileMode os.FileMode) error {
-	// Create a tar archive containing the file
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
 
-	// Create tar header
+	// Trim leading slash(es) to avoid double slashes in the tar path
+	tarPath := strings.TrimPrefix(targetPath, "/")
+
+	// Create tar header with full path
 	header := &tar.Header{
-		Name:     filepath.Base(targetPath),
+		Name:     tarPath,
 		Size:     int64(len(content)),
 		Mode:     int64(fileMode),
 		ModTime:  time.Now(),
@@ -894,16 +920,12 @@ func (s *Server) copyContentToContainer(ctx context.Context, containerID string,
 		return fmt.Errorf("close tar writer: %w", err)
 	}
 
-	// Copy the tar archive to the container
-	targetDir := filepath.Dir(targetPath)
-	if targetDir == "." {
-		targetDir = "/"
-	}
-
+	// Always extract to root. The tar archive contains the full path, so tar will
+	// automatically create any intermediate directories that don't exist in the container.
 	if err := s.client.CopyToContainer(
 		ctx,
 		containerID,
-		targetDir,
+		"/",
 		&buf,
 		container.CopyToContainerOptions{CopyUIDGID: true},
 	); err != nil {
@@ -933,6 +955,40 @@ func toDockerBindOptions(opts *api.BindOptions) *mount.BindOptions {
 	}
 
 	return dockerOpts
+}
+
+func toDockerUlimits(ulimits map[string]api.Ulimit) []*units.Ulimit {
+	if len(ulimits) == 0 {
+		return nil
+	}
+
+	dockerUlimits := make([]*units.Ulimit, 0, len(ulimits))
+	for name, u := range ulimits {
+		dockerUlimits = append(dockerUlimits, &units.Ulimit{
+			Name: name,
+			Soft: u.Soft,
+			Hard: u.Hard,
+		})
+	}
+
+	return dockerUlimits
+}
+
+func toDockerDevices(devices []api.DeviceMapping) []container.DeviceMapping {
+	if len(devices) == 0 {
+		return nil
+	}
+
+	dockerDevices := make([]container.DeviceMapping, 0, len(devices))
+	for _, d := range devices {
+		dockerDevices = append(dockerDevices, container.DeviceMapping{
+			PathOnHost:        d.HostPath,
+			PathInContainer:   d.ContainerPath,
+			CgroupPermissions: d.CgroupPermissions,
+		})
+	}
+
+	return dockerDevices
 }
 
 // verifyDockerVolumesExist checks if the Docker named volumes referenced in the mounts exist on the machine.
@@ -1074,6 +1130,97 @@ func (s *Server) RemoveServiceContainer(ctx context.Context, req *pb.RemoveConta
 	}
 
 	return resp, nil
+}
+
+// logsHeartbeatInterval is the interval at which heartbeat entries are sent when there are no logs to stream.
+const logsHeartbeatInterval = 200 * time.Millisecond
+
+// ContainerLogs streams logs from a container.
+func (s *Server) ContainerLogs(
+	req *pb.ContainerLogsRequest, stream grpc.ServerStreamingServer[pb.ContainerLogEntry],
+) error {
+	// Stream context is cancelled when the client has disconnected or the stream has ended.
+	ctx := stream.Context()
+
+	opts := ContainerLogsOptions{
+		ContainerID: req.ContainerId,
+		Follow:      req.Follow,
+		Tail:        int(req.Tail),
+		Since:       req.Since,
+		Until:       req.Until,
+	}
+
+	logsCh, err := s.service.ContainerLogs(ctx, opts)
+	if err != nil {
+		if errdefs.IsNotFound(err) {
+			return status.Error(codes.NotFound, err.Error())
+		}
+		return status.Errorf(codes.Internal, "get container logs: %v", err)
+	}
+
+	log := slog.With("container_id", req.ContainerId, "stream_id", fmt.Sprintf("%p", stream)[2:])
+	log.Debug("Starting container logs streaming.",
+		"follow", req.Follow, "tail", req.Tail, "since", req.Since, "until", req.Until)
+
+	// Heartbeats are needed only when following logs to let the client know when there are no new log entries
+	// to allow it to advance the watermark of last received log timestamp.
+	var heartbeatCh <-chan time.Time
+	if req.Follow {
+		heartbeatTicker := time.NewTicker(logsHeartbeatInterval)
+		defer heartbeatTicker.Stop()
+		heartbeatCh = heartbeatTicker.C
+	}
+
+	started := time.Now()
+	lastSent := time.Time{}
+
+	for {
+		select {
+		case entry, ok := <-logsCh:
+			if !ok {
+				// Channel closed, no more log entries.
+				return nil
+			}
+
+			if entry.Err != nil {
+				return status.Error(codes.Internal, entry.Err.Error())
+			}
+
+			pbEntry := &pb.ContainerLogEntry{
+				Stream:    api.LogStreamTypeToProto(entry.Stream),
+				Timestamp: timestamppb.New(entry.Timestamp),
+				Message:   entry.Message,
+			}
+			if err = stream.Send(pbEntry); err != nil {
+				return status.Errorf(codes.Internal, "send log entry: %v", err)
+			}
+			lastSent = entry.Timestamp
+
+		case now := <-heartbeatCh:
+			// Only send heartbeat if no log entries have been sent since the last heartbeat interval or
+			// if no log entries have been sent at all for at least a heartbeat interval since starting.
+			if now.Sub(lastSent) < logsHeartbeatInterval ||
+				(lastSent.IsZero() && now.Sub(started) < logsHeartbeatInterval) {
+				continue
+			}
+
+			// Use the timestamp one heartbeat in the past to be conservative. This reduces the chance of sending
+			// a timestamp that is greater than a log entry currently being parsed but not yet sent, which would
+			// cause the client to incorrectly believe it has received all logs up to that point.
+			heartbeat := &pb.ContainerLogEntry{
+				Stream:    pb.ContainerLogEntry_HEARTBEAT,
+				Timestamp: timestamppb.New(now.Add(-logsHeartbeatInterval)),
+			}
+			if err = stream.Send(heartbeat); err != nil {
+				return status.Errorf(codes.Internal, "send log stream heartbeat: %v", err)
+			}
+			lastSent = heartbeat.Timestamp.AsTime()
+			log.Debug("Sent log stream heartbeat.", "timestamp", lastSent)
+
+		case <-ctx.Done():
+			return status.Error(codes.Canceled, ctx.Err().Error())
+		}
+	}
 }
 
 // receiveExecConfig receives and validates the initial exec configuration from the stream.

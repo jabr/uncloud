@@ -7,7 +7,9 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 
+	mapset "github.com/deckarep/golang-set/v2"
 	"github.com/distribution/reference"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
@@ -17,6 +19,13 @@ import (
 const (
 	ServiceModeReplicated = "replicated"
 	ServiceModeGlobal     = "global"
+
+	// UpdateOrderStartFirst starts the new container before stopping the old one.
+	// This minimizes downtime but briefly runs both containers.
+	UpdateOrderStartFirst = "start-first"
+	// UpdateOrderStopFirst stops the old container before starting the new one.
+	// This prevents data corruption for stateful services but causes brief downtime.
+	UpdateOrderStopFirst = "stop-first"
 
 	// PullPolicyAlways means the image is always pulled from the registry.
 	PullPolicyAlways = "always"
@@ -58,6 +67,8 @@ type ServiceSpec struct {
 	Ports []PortSpec
 	// Replicas is the number of containers to run for the service. Only valid for a replicated service.
 	Replicas uint `json:",omitempty"`
+	// UpdateConfig configures how the service is updated during a deployment.
+	UpdateConfig UpdateConfig `json:",omitempty"`
 	// Volumes is list of data volumes that can be mounted into the container.
 	Volumes []VolumeSpec
 	// Configs is list of configuration objects that can be mounted into the container.
@@ -224,13 +235,20 @@ func (s *ServiceSpec) Clone() ServiceSpec {
 // ContainerSpec defines the desired state of a container in a service.
 // ATTENTION: after changing this struct, verify if deploy.EvalContainerSpecChange needs to be updated.
 type ContainerSpec struct {
+	// Specifies which additional capabilities should be added for the container.
+	CapAdd []string
+	// Specifies which capabilities should be dropped from the container.
+	CapDrop []string
 	// Command overrides the default CMD of the image to be executed when running a container.
 	Command []string
 	// Entrypoint overrides the default ENTRYPOINT of the image.
 	Entrypoint []string
 	// Env defines the environment variables to set inside the container.
-	Env   EnvVars
-	Image string
+	Env EnvVars
+	// Healthcheck defines the health check configuration for the container or overrides the health check options
+	// defined in the image. If nil, the image's default health check is used.
+	Healthcheck *HealthcheckSpec `json:",omitempty"`
+	Image       string
 	// Run a custom init inside the container. If nil, use the daemon's configured settings.
 	Init *bool
 	// LogDriver overrides the default logging driver for the container. Each Docker daemon can have its own default.
@@ -242,6 +260,8 @@ type ContainerSpec struct {
 	PullPolicy string
 	// Resource allocation for the container.
 	Resources ContainerResources
+	// Namespaced kernel parameters to be set in container
+	Sysctls map[string]string
 	// User overrides the default user of the image used to run the container. Format: user|UID[:group|GID].
 	User string
 	// VolumeMounts specifies how volumes are mounted into the container filesystem.
@@ -289,11 +309,17 @@ func (s *ContainerSpec) Equals(spec ContainerSpec) bool {
 	orig := s.SetDefaults()
 	spec = spec.SetDefaults()
 
+	// Volumes
 	slices.Sort(orig.Volumes)
 	slices.Sort(spec.Volumes)
 
+	// Volume mounts
 	sortVolumeMounts(orig.VolumeMounts)
 	sortVolumeMounts(spec.VolumeMounts)
+
+	// Config mounts
+	sortConfigMounts(orig.ConfigMounts)
+	sortConfigMounts(spec.ConfigMounts)
 
 	return cmp.Equal(orig, spec, cmpopts.EquateEmpty())
 }
@@ -301,6 +327,14 @@ func (s *ContainerSpec) Equals(spec ContainerSpec) bool {
 func (s *ContainerSpec) Clone() ContainerSpec {
 	spec := *s
 
+	if s.CapAdd != nil {
+		spec.CapAdd = make([]string, len(s.CapAdd))
+		copy(spec.CapAdd, s.CapAdd)
+	}
+	if s.CapDrop != nil {
+		spec.CapDrop = make([]string, len(s.CapDrop))
+		copy(spec.CapDrop, s.CapDrop)
+	}
 	if s.Command != nil {
 		spec.Command = make([]string, len(s.Command))
 		copy(spec.Command, s.Command)
@@ -308,6 +342,17 @@ func (s *ContainerSpec) Clone() ContainerSpec {
 	if s.Entrypoint != nil {
 		spec.Entrypoint = make([]string, len(s.Entrypoint))
 		copy(spec.Entrypoint, s.Entrypoint)
+	}
+	if s.Env != nil {
+		spec.Env = make(EnvVars, len(s.Env))
+		for k, v := range s.Env {
+			spec.Env[k] = v
+		}
+	}
+	if s.Healthcheck != nil {
+		hc := *s.Healthcheck
+		hc.Test = slices.Clone(s.Healthcheck.Test)
+		spec.Healthcheck = &hc
 	}
 	if s.LogDriver != nil {
 		logDriver := *s.LogDriver
@@ -323,6 +368,27 @@ func (s *ContainerSpec) Clone() ContainerSpec {
 	if s.VolumeMounts != nil {
 		spec.VolumeMounts = make([]VolumeMount, len(s.VolumeMounts))
 		copy(spec.VolumeMounts, s.VolumeMounts)
+	}
+	if s.ConfigMounts != nil {
+		spec.ConfigMounts = make([]ConfigMount, len(s.ConfigMounts))
+		for i, cm := range s.ConfigMounts {
+			spec.ConfigMounts[i] = cm.Clone()
+		}
+	}
+	if s.Sysctls != nil {
+		spec.Sysctls = make(map[string]string, len(s.Sysctls))
+		for k, v := range s.Sysctls {
+			spec.Sysctls[k] = v
+		}
+	}
+	if s.Resources.Ulimits != nil {
+		spec.Resources.Ulimits = maps.Clone(s.Resources.Ulimits)
+	}
+	if s.Resources.Devices != nil {
+		spec.Resources.Devices = slices.Clone(s.Resources.Devices)
+	}
+	if s.Resources.DeviceReservations != nil {
+		spec.Resources.DeviceReservations = slices.Clone(s.Resources.DeviceReservations)
 	}
 
 	return spec
@@ -342,11 +408,39 @@ func (e EnvVars) ToSlice() []string {
 	return env
 }
 
+// HealthcheckSpec defines the health check configuration for a container.
+type HealthcheckSpec struct {
+	// Test is the command used to check health.
+	// Formats: ["CMD", args...], ["CMD-SHELL", "command"], or ["NONE"] to disable.
+	Test []string `json:",omitempty"`
+	// Interval is the time between health checks.
+	// Zero means to inherit the value from the image or use the Docker default (30s) if not defined in the image.
+	Interval time.Duration `json:",omitempty"`
+	// Timeout is how long to wait before considering the checck to have hung.
+	Timeout time.Duration `json:",omitempty"`
+	// StartPeriod is the initialisation time for a container before the retries start to count down.
+	StartPeriod time.Duration `json:",omitempty"`
+	// StartInterval is the time between health checks during the start period.
+	StartInterval time.Duration `json:",omitempty"`
+	// Retries is the number of consecutive failures needed to consider a container unhealthy.
+	Retries uint `json:",omitempty"`
+	// Disable disables the health check defined in the image. true is equivalent to setting Test to ["NONE"].
+	Disable bool `json:",omitempty"`
+}
+
 type LogDriver struct {
 	// Name of the logging driver to use.
 	Name string
 	// Options is the configuration options to pass to the logging driver.
 	Options map[string]string
+}
+
+// UpdateConfig configures how a service is updated during a deployment.
+type UpdateConfig struct {
+	// Order specifies the order of operations during an update.
+	// Valid values are "start-first" (default for stateless services) and "stop-first" (default for services with volumes).
+	// Empty value means the strategy will determine the order based on service characteristics.
+	Order string `json:",omitempty"`
 }
 
 type RunServiceResponse struct {
@@ -364,6 +458,16 @@ type Service struct {
 type MachineServiceContainer struct {
 	MachineID string
 	Container ServiceContainer
+}
+
+// MachineIDs returns a list of unique machine IDs where the service containers are running.
+func (s *Service) MachineIDs() []string {
+	ids := mapset.NewSet[string]()
+	for _, mc := range s.Containers {
+		ids.Add(mc.MachineID)
+	}
+
+	return ids.ToSlice()
 }
 
 // Images returns a sorted list of unique images used by the service containers.

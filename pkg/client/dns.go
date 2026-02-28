@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/netip"
 	"sync"
 	"time"
 
@@ -61,14 +63,11 @@ func (cli *Client) CreateIngressRecords(ctx context.Context, serviceID string) (
 			continue
 		}
 
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-
+		wg.Go(func() {
 			if err = verifyCaddyReachable(ctx, m.Machine); err == nil {
 				reachableMachines <- m.Machine
 			}
-		}()
+		})
 	}
 
 	go func() {
@@ -111,8 +110,7 @@ func verifyCaddyReachable(ctx context.Context, m *pb.MachineInfo) error {
 	eventID := fmt.Sprintf("Machine %s (%s)", m.Name, publicIP)
 	pw.Event(progress.NewEvent(eventID, progress.Working, "Querying"))
 
-	verifyURL := fmt.Sprintf("http://%s%s", publicIP, caddyconfig.VerifyPath)
-
+	verifyURL := getVerifyURL(publicIP)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, verifyURL, nil)
 	if err != nil {
 		pw.Event(progress.NewEvent(eventID, progress.Error, err.Error()))
@@ -171,6 +169,11 @@ func verifyCaddyReachable(ctx context.Context, m *pb.MachineInfo) error {
 
 		return fmt.Errorf("unexpected HTTP response body: %s", bodyStr)
 	}
+}
+
+func getVerifyURL(publicIP netip.Addr) string {
+	httpFormattedIP := net.JoinHostPort(publicIP.String(), "")
+	return fmt.Sprintf("http://%s%s", httpFormattedIP, caddyconfig.VerifyPath)
 }
 
 // unreachable creates a new Unreachable error event.

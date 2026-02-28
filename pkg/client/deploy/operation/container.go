@@ -1,35 +1,12 @@
-package deploy
+package operation
 
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/volume"
 	"github.com/psviderski/uncloud/pkg/api"
 )
-
-// Operation represents a single atomic operation in a deployment process.
-// Operations can be composed to form complex deployment strategies.
-type Operation interface {
-	// Execute performs the operation using the provided client.
-	// TODO: Encapsulate the client in the operation as otherwise it gives an impression that different clients
-	//  can be provided. But in reality, the operation is tightly coupled with the client that was used to create it.
-	Execute(ctx context.Context, cli Client) error
-	// Format returns a human-readable representation of the operation.
-	// TODO: get rid of the resolver and assign the required names for formatting in the operation itself.
-	Format(resolver NameResolver) string
-	String() string
-}
-
-// NameResolver resolves machine and container IDs to their names.
-type NameResolver interface {
-	MachineName(machineID string) string
-	ContainerName(containerID string) string
-}
-
-// TODO: pass api.ServiceContainer to operations to simplify operation formatting in the plan.
 
 // RunContainerOperation creates and starts a new container on a specific machine.
 type RunContainerOperation struct {
@@ -118,74 +95,63 @@ func (o *RemoveContainerOperation) String() string {
 		o.MachineID, o.Container.ServiceID(), o.Container.ID)
 }
 
-// CreateVolumeOperation creates a volume on a specific machine.
-type CreateVolumeOperation struct {
-	VolumeSpec api.VolumeSpec
-	MachineID  string
-	// MachineName is used for formatting the operation output only.
-	MachineName string
+// ReplaceContainerOperation replaces an old container with a new one based on the specified update order.
+// For start-first: starts new container, then removes old container.
+// For stop-first: stops old container, starts new container, then removes old container.
+type ReplaceContainerOperation struct {
+	ServiceID    string
+	Spec         api.ServiceSpec
+	MachineID    string
+	OldContainer api.ServiceContainer
+	// Order specifies the update order: "start-first" or "stop-first".
+	Order string
 }
 
-func (o *CreateVolumeOperation) Execute(ctx context.Context, cli Client) error {
-	if o.VolumeSpec.Type != api.VolumeTypeVolume {
-		return fmt.Errorf("invalid volume type: '%s', expected '%s'", o.VolumeSpec.Type, api.VolumeTypeVolume)
-	}
+func (o *ReplaceContainerOperation) Execute(ctx context.Context, cli Client) error {
+	stopFirst := o.Order == api.UpdateOrderStopFirst
 
-	opts := volume.CreateOptions{
-		Name: o.VolumeSpec.DockerVolumeName(),
-	}
-	if o.VolumeSpec.VolumeOptions != nil {
-		if o.VolumeSpec.VolumeOptions.Driver != nil {
-			opts.Driver = o.VolumeSpec.VolumeOptions.Driver.Name
-			opts.DriverOpts = o.VolumeSpec.VolumeOptions.Driver.Options
+	if stopFirst {
+		if err := cli.StopContainer(ctx, o.ServiceID, o.OldContainer.ID, container.StopOptions{}); err != nil {
+			return fmt.Errorf("stop old container: %w", err)
 		}
-		opts.Labels = o.VolumeSpec.VolumeOptions.Labels
 	}
 
-	if _, err := cli.CreateVolume(ctx, o.MachineID, opts); err != nil {
-		return fmt.Errorf("create volume: %w", err)
+	// TODO: Rollback support - if new container fails to start, stop new, collect logs, and restart old container (#24)
+	// TODO: When parallelism is added, rollback becomes more complex - need to track which containers
+	//       were stopped and restore them all on failure
+	resp, err := cli.CreateContainer(ctx, o.ServiceID, o.Spec, o.MachineID)
+	if err != nil {
+		return fmt.Errorf("create container: %w", err)
+	}
+	if err = cli.StartContainer(ctx, o.ServiceID, resp.ID); err != nil {
+		return fmt.Errorf("start container: %w", err)
+	}
+
+	// TODO: wait for the container to become healthy. If unhealthy, stop new container, collect logs, and start old.
+
+	// For start-first, we need to stop before removing.
+	// For stop-first, the container is already stopped.
+	if !stopFirst {
+		if err := cli.StopContainer(ctx, o.ServiceID, o.OldContainer.ID, container.StopOptions{}); err != nil {
+			return fmt.Errorf("stop old container: %w", err)
+		}
+	}
+
+	if err := cli.RemoveContainer(ctx, o.ServiceID, o.OldContainer.ID, container.RemoveOptions{
+		RemoveVolumes: true,
+	}); err != nil {
+		return fmt.Errorf("remove old container: %w", err)
 	}
 
 	return nil
 }
 
-func (o *CreateVolumeOperation) Format(_ NameResolver) string {
-	return fmt.Sprintf("%s: Create volume [name=%s]", o.MachineName, o.VolumeSpec.DockerVolumeName())
+func (o *ReplaceContainerOperation) Format(resolver NameResolver) string {
+	return fmt.Sprintf("%s: Replace container [id=%s image=%s order=%s]",
+		resolver.MachineName(o.MachineID), o.OldContainer.ShortID(), o.Spec.Container.Image, o.Order)
 }
 
-func (o *CreateVolumeOperation) String() string {
-	return fmt.Sprintf("CreateVolumeOperation[machine_id=%s volume=%s]",
-		o.MachineID, o.VolumeSpec.DockerVolumeName())
-}
-
-// SequenceOperation is a composite operation that executes a sequence of operations in order.
-type SequenceOperation struct {
-	Operations []Operation
-}
-
-func (o *SequenceOperation) Execute(ctx context.Context, cli Client) error {
-	for _, op := range o.Operations {
-		if err := op.Execute(ctx, cli); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (o *SequenceOperation) Format(resolver NameResolver) string {
-	ops := make([]string, len(o.Operations))
-	for i, op := range o.Operations {
-		ops[i] = "- " + op.Format(resolver)
-	}
-
-	return strings.Join(ops, "\n")
-}
-
-func (o *SequenceOperation) String() string {
-	ops := make([]string, len(o.Operations))
-	for i, op := range o.Operations {
-		ops[i] = op.String()
-	}
-
-	return fmt.Sprintf("SequenceOperation[%s]", strings.Join(ops, ", "))
+func (o *ReplaceContainerOperation) String() string {
+	return fmt.Sprintf("ReplaceContainerOperation[machine_id=%s service_id=%s old_container_id=%s order=%s]",
+		o.MachineID, o.ServiceID, o.OldContainer.ID, o.Order)
 }
