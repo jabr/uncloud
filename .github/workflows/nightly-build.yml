@@ -27,6 +27,16 @@ jobs:
       - name: Reset changes in mise.lock after fresh mise install
         run: git checkout mise.lock
 
+      - name: Cache Go build and module cache
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: |
+            ~/Library/Caches/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
       - name: Run GoReleaser snapshot
         run: goreleaser release --snapshot --clean
         env:
