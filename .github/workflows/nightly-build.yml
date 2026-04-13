@@ -12,7 +12,8 @@ env:
 
 jobs:
   nightly:
-    runs-on: ubuntu-latest
+    # Run on macOS to be able to build the fsevent dependency required by compose on macOS.
+    runs-on: macos-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
