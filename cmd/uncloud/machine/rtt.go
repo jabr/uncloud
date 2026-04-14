@@ -51,6 +51,9 @@ func rtt(ctx context.Context, uncli *cli.CLI) error {
 	// Map machine IDs to names for display from the response.
 	machineNames := make(map[string]string)
 	for _, m := range resp.Machines {
+		if m.Machine == nil {
+			continue
+		}
 		machineNames[m.Machine.Id] = m.Machine.Name
 	}
 
@@ -64,8 +67,8 @@ func rtt(ctx context.Context, uncli *cli.CLI) error {
 
 	for _, m := range resp.Machines {
 		// Unlikely to occur, but might be a possible edge case when
-		// a machine is still initializing. So just to be safe...
-		if m.Rtts == nil {
+		// a machine is still initializing. So just to be safe..
+		if m.Machine == nil || m.Rtts == nil {
 			continue
 		}
 		for peerID, stats := range m.Rtts {
