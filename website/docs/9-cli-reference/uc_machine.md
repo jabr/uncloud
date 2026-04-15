@@ -27,3 +27,4 @@ Manage machines in the cluster.
 * [uc machine rm](uc_machine_rm.md)	 - Remove a machine from a cluster and reset it.
 * [uc machine rtt](uc_machine_rtt.md)	 - Show round-trip times between machines.
 * [uc machine update](uc_machine_update.md)	 - Update machine configuration in the cluster.
+
