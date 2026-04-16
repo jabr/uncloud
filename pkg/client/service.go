@@ -10,6 +10,7 @@ import (
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/volume"
+	"github.com/psviderski/uncloud/internal/cli/tui"
 	"github.com/psviderski/uncloud/internal/machine/api/pb"
 	"github.com/psviderski/uncloud/pkg/api"
 	"github.com/psviderski/uncloud/pkg/client/deploy/scheduler"
@@ -118,7 +119,7 @@ func (cli *Client) InspectService(ctx context.Context, nameOrID string) (api.Ser
 	for _, mc := range machineContainers {
 		// NOTE: Metadata should never be nil in practice. This is legacy fallback that will be removed.
 		if mc.Metadata == nil {
-			PrintWarning("metadata is missing in response from unknown server")
+			tui.PrintWarning("metadata is missing in response from unknown server")
 			continue
 		}
 
@@ -347,7 +348,7 @@ func (cli *Client) ListServices(ctx context.Context) ([]api.Service, error) {
 	for _, mc := range machineContainers {
 		// NOTE: Metadata should never be nil in practice. This is legacy fallback that will be removed.
 		if mc.Metadata == nil {
-			PrintWarning("metadata is missing in response from unknown server")
+			tui.PrintWarning("metadata is missing in response from unknown server")
 			continue
 		}
 

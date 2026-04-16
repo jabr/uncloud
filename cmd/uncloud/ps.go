@@ -212,14 +212,14 @@ func collectContainers(ctx context.Context, cli *client.Client) ([]containerInfo
 	for _, msc := range machineContainers {
 		// NOTE: Metadata should never be nil in practice. This is legacy fallback that will be removed.
 		if msc.Metadata == nil {
-			client.PrintWarning("metadata is missing in response from unknown server")
+			tui.PrintWarning("metadata is missing in response from unknown server")
 			continue
 		}
 
 		machineName := msc.Metadata.MachineName
 
 		if msc.Metadata.Error != "" {
-			client.PrintWarning(fmt.Sprintf("failed to list service containers on machine %s: %s",
+			tui.PrintWarning(fmt.Sprintf("failed to list service containers on machine %s: %s",
 				machineName, msc.Metadata.Error))
 			continue
 		}

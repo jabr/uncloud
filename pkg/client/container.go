@@ -336,9 +336,7 @@ func (cli *Client) StopContainer(
 	}
 
 	pw := progress.ContextWriter(op.ctx)
-	eventID := cliprogress.ContainerEventID(ctx, ctr.Container.ServiceSpec.Name, ctr.Container.ID, machine.Machine.Name)
-
-	pw.Event(progress.StoppingEvent(eventID))
+	pw.Event(progress.StoppingEvent(op.eventID))
 	if err = cli.Docker.StopContainer(op.ctx, op.containerID, opts); err != nil {
 		return err
 	}
@@ -359,7 +357,6 @@ func (cli *Client) RemoveContainer(
 	}
 
 	pw := progress.ContextWriter(op.ctx)
-	ctr.Container.ID, machine.Machine.Name)
 
 	pw.Event(progress.RemovingEvent(op.eventID))
 	if err = cli.Docker.RemoveServiceContainer(op.ctx, op.containerID, opts); err != nil {
