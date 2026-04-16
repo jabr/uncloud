@@ -207,6 +207,16 @@ func (c *SSHCLIConnector) CheckTCPForwarding(ctx context.Context) error {
 	return c.fwdCheckErr
 }
 
+// CloseControlMaster terminates the SSH ControlMaster process for this destination so the next connection starts
+// a fresh SSH session. No-op if no master is running or the control socket is not configured. Errors are ignored.
+func (c *SSHCLIConnector) CloseControlMaster(ctx context.Context) {
+	if c.controlSockPath == "" {
+		return
+	}
+	args := append(c.buildSSHArgs(), "-O", "exit")
+	_ = exec.CommandContext(ctx, "ssh", args...).Run()
+}
+
 func (c *SSHCLIConnector) Close() error {
 	// Individual connections are managed by gRPC and closed when the gRPC connection closes.
 	// The SSH control socket may persist for connection reuse across CLI invocations.
