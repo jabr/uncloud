@@ -3,12 +3,14 @@ package wg
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
 	"github.com/docker/go-units"
 	"github.com/psviderski/uncloud/internal/cli"
 	"github.com/psviderski/uncloud/internal/cli/tui"
+	"github.com/psviderski/uncloud/internal/machine/api/pb"
 	"github.com/spf13/cobra"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 	"google.golang.org/grpc/codes"
@@ -74,16 +76,18 @@ func runShow(ctx context.Context, uncli *cli.CLI, opts showOptions) error {
 	if err != nil {
 		return fmt.Errorf("list machines: %w", err)
 	}
-	machinesNamesByPublicKey := make(map[string]string)
+	machinesByPublicKey := make(map[string]*pb.MachineInfo)
 	for _, m := range machines {
 		publicKey := wgtypes.Key(m.Machine.Network.PublicKey).String()
-		machinesNamesByPublicKey[publicKey] = m.Machine.Name
+		machinesByPublicKey[publicKey] = m.Machine
 	}
 
-	// Fetch the machine's name for more descriptive output
+	// Fetch the machine's info and RTTs for display
+	var selfMachine *pb.MachineDetails
 	inspectResp, err := client.MachineClient.InspectMachine(ctx, nil)
 	if err == nil {
-		fmt.Printf("Machine name:         %s\n", inspectResp.Machines[0].Machine.Name)
+		selfMachine = inspectResp.Machines[0]
+		fmt.Printf("Machine name:         %s\n", selfMachine.Machine.Name)
 	}
 
 	fmt.Printf("WireGuard interface:  %s\n", resp.InterfaceName)
@@ -97,12 +101,19 @@ func runShow(ctx context.Context, uncli *cli.CLI, opts showOptions) error {
 	}
 
 	t := tui.NewTable()
-	t.Headers("PEER", "PUBLIC KEY", "ENDPOINT", "HANDSHAKE", "RECEIVED", "SENT", "ALLOWED IPS")
+	t.Headers("PEER", "PUBLIC KEY", "ENDPOINT", "HANDSHAKE", "RTT", "RECEIVED", "SENT", "ALLOWED IPS")
 
 	for _, peer := range resp.Peers {
-		machineName, ok := machinesNamesByPublicKey[wgtypes.Key(peer.PublicKey).String()]
-		if !ok {
-			machineName = "(unknown)"
+		publicKeyStr := wgtypes.Key(peer.PublicKey).String()
+		machineName := "(unknown)"
+		rtt := "-"
+		if m, ok := machinesByPublicKey[publicKeyStr]; ok {
+			machineName = m.Name
+			if selfMachine != nil {
+				if stats, ok := selfMachine.Rtts[m.Id]; ok {
+					rtt = fmt.Sprintf("%dms", int64(math.Ceil(stats.Median)))
+				}
+			}
 		}
 
 		lastHandshake := ""
@@ -112,9 +123,10 @@ func runShow(ctx context.Context, uncli *cli.CLI, opts showOptions) error {
 
 		t.Row(
 			machineName,
-			wgtypes.Key(peer.PublicKey).String(),
+			publicKeyStr,
 			peer.Endpoint,
 			lastHandshake,
+			rtt,
 			units.HumanSize(float64(peer.ReceiveBytes)),
 			units.HumanSize(float64(peer.TransmitBytes)),
 			strings.Join(peer.AllowedIps, tui.Faint.Render(", ")),
