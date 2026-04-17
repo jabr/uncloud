@@ -965,8 +965,8 @@ func (m *Machine) getMachineRTTs(ctx context.Context) (map[string]*pb.RTTStats, 
 		// Corrosion uses the management IP for gossip.
 		if mid, ok := ipToMachineID[stats.Addr.Addr()]; ok {
 			pbRTTs[mid] = &pb.RTTStats{
-				Average: stats.Average,
-				StdDev:  stats.StdDev,
+				Median: stats.Median,
+				StdDev: stats.StdDev,
 			}
 		}
 	}

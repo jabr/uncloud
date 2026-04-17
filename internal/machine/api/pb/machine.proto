@@ -133,6 +133,6 @@ message WireGuardPeer {
 }
 
 message RTTStats {
-  double average = 1;
+  double median = 1;
   double std_dev = 2;
 }

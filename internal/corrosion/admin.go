@@ -9,6 +9,7 @@ import (
 	"math"
 	"net"
 	"net/netip"
+	"sort"
 	"time"
 )
 
@@ -259,12 +260,12 @@ func (c *AdminClient) ClusterMembershipStates(latest bool) ([]ClusterMembershipS
 }
 
 type MemberRTTStats struct {
-	Addr    netip.AddrPort
-	Average float64
-	StdDev  float64
+	Addr   netip.AddrPort
+	Median float64
+	StdDev float64
 }
 
-// ClusterMemberRTTs returns the average and standard deviation of round-trip times to each cluster member.
+// ClusterMemberRTTs returns the median and standard deviation of round-trip times to each cluster member.
 func (c *AdminClient) ClusterMemberRTTs() ([]MemberRTTStats, error) {
 	respCh, err := c.SendCommand([]byte("{\"Cluster\":\"Members\"}"))
 	if err != nil {
@@ -289,23 +290,32 @@ func (c *AdminClient) ClusterMemberRTTs() ([]MemberRTTStats, error) {
 			continue
 		}
 
+		sort.Float64s(rtts)
+		n := len(rtts)
+		var median float64
+		if n%2 == 0 {
+			median = (rtts[n/2-1] + rtts[n/2]) / 2
+		} else {
+			median = rtts[n/2]
+		}
+
 		var sum float64
 		for _, rtt := range rtts {
 			sum += rtt
 		}
-		avg := sum / float64(len(rtts))
+		avg := sum / float64(n)
 
 		var varianceSum float64
 		for _, rtt := range rtts {
 			diff := rtt - avg
 			varianceSum += diff * diff
 		}
-		stdDev := math.Sqrt(varianceSum / float64(len(rtts)))
+		stdDev := math.Sqrt(varianceSum / float64(n))
 
 		stats = append(stats, MemberRTTStats{
-			Addr:    addr,
-			Average: avg,
-			StdDev:  stdDev,
+			Addr:   addr,
+			Median: median,
+			StdDev: stdDev,
 		})
 	}
 

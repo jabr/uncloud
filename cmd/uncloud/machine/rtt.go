@@ -3,6 +3,7 @@ package machine
 import (
 	"context"
 	"fmt"
+	"math"
 	"sort"
 
 	"github.com/psviderski/uncloud/internal/cli"
@@ -18,8 +19,8 @@ func NewRTTCommand() *cobra.Command {
 		Long: `Show round-trip times between machines.
 
 Round-trip time statistics are collected from the Corrosion gossip protocol
-and represent the average of recent RTT samples between each pair of machines
-in the cluster. The values shown include the average RTT and standard deviation
+and represent the median of recent RTT samples between each pair of machines
+in the cluster. The values shown include the median RTT and standard deviation
 for each machine-to-machine connection.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			uncli := cmd.Context().Value("cli").(*cli.CLI)
@@ -59,7 +60,7 @@ func rtt(ctx context.Context, uncli *cli.CLI) error {
 	type row struct {
 		machine string
 		peer    string
-		avg     float64
+		median  float64
 		stdDev  float64
 	}
 	var rows []row
@@ -78,7 +79,7 @@ func rtt(ctx context.Context, uncli *cli.CLI) error {
 			rows = append(rows, row{
 				machine: m.Machine.Name,
 				peer:    peerName,
-				avg:     stats.Average,
+				median:  stats.Median,
 				stdDev:  stats.StdDev,
 			})
 		}
@@ -94,10 +95,10 @@ func rtt(ctx context.Context, uncli *cli.CLI) error {
 
 	// Print table
 	t := tui.NewTable()
-	t.Headers("MACHINE", "PEER", "RTT")
+	t.Headers("MACHINE", "PEER", "MEDIAN", "STDDEV")
 
 	for _, r := range rows {
-		t.Row(r.machine, r.peer, fmt.Sprintf("%.1f ±%.1f", r.avg, r.stdDev))
+		t.Row(r.machine, r.peer, fmt.Sprintf("%dms", int64(math.Ceil(r.median))), fmt.Sprintf("±%.1fms", r.stdDev))
 	}
 
 	fmt.Println(t)
