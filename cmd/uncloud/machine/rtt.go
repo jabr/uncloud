@@ -3,11 +3,10 @@ package machine
 import (
 	"context"
 	"fmt"
-	"os"
 	"sort"
-	"text/tabwriter"
 
 	"github.com/psviderski/uncloud/internal/cli"
+	"github.com/psviderski/uncloud/internal/cli/tui"
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
@@ -94,11 +93,13 @@ func rtt(ctx context.Context, uncli *cli.CLI) error {
 	})
 
 	// Print table
-	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-	fmt.Fprintln(tw, "MACHINE\tPEER\tRTT")
+	t := tui.NewTable()
+	t.Headers("MACHINE", "PEER", "RTT")
 
 	for _, r := range rows {
-		fmt.Fprintf(tw, "%s\t%s\t%.1f ±%.1f\n", r.machine, r.peer, r.avg, r.stdDev)
+		t.Row(r.machine, r.peer, fmt.Sprintf("%.1f ±%.1f", r.avg, r.stdDev))
 	}
-	return tw.Flush()
+
+	fmt.Println(t)
+	return nil
 }
