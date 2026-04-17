@@ -7,8 +7,8 @@ Show round-trip times between machines.
 Show round-trip times between machines.
 
 Round-trip time statistics are collected from the Corrosion gossip protocol
-and represent the average of recent RTT samples between each pair of machines
-in the cluster. The values shown include the average RTT and standard deviation
+and represent the median of recent RTT samples between each pair of machines
+in the cluster. The values shown include the median RTT and standard deviation
 for each machine-to-machine connection.
 
 ```
