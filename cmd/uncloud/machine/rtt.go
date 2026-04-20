@@ -3,8 +3,8 @@ package machine
 import (
 	"context"
 	"fmt"
-	"math"
 	"sort"
+	"time"
 
 	"github.com/psviderski/uncloud/internal/cli"
 	"github.com/psviderski/uncloud/internal/cli/tui"
@@ -60,14 +60,14 @@ func rtt(ctx context.Context, uncli *cli.CLI) error {
 	type row struct {
 		machine string
 		peer    string
-		median  float64
-		stdDev  float64
+		median  time.Duration
+		stdDev  time.Duration
 	}
 	var rows []row
 
 	for _, m := range resp.Machines {
 		// Unlikely to occur, but might be a possible edge case when
-		// a machine is still initializing. So just to be safe..
+		// a machine is still initializing. So just to be safe.
 		if m.Machine == nil || m.Rtts == nil {
 			continue
 		}
@@ -79,13 +79,13 @@ func rtt(ctx context.Context, uncli *cli.CLI) error {
 			rows = append(rows, row{
 				machine: m.Machine.Name,
 				peer:    peerName,
-				median:  stats.Median,
-				stdDev:  stats.StdDev,
+				median:  stats.Median.AsDuration(),
+				stdDev:  stats.StdDev.AsDuration(),
 			})
 		}
 	}
 
-	// Sort by machine name then peer name
+	// Sort by machine name then peer name.
 	sort.Slice(rows, func(i, j int) bool {
 		if rows[i].machine == rows[j].machine {
 			return rows[i].peer < rows[j].peer
@@ -93,14 +93,19 @@ func rtt(ctx context.Context, uncli *cli.CLI) error {
 		return rows[i].machine < rows[j].machine
 	})
 
-	// Print table
+	// Print table.
 	t := tui.NewTable()
 	t.Headers("MACHINE", "PEER", "MEDIAN", "STDDEV")
 
 	for _, r := range rows {
-		t.Row(r.machine, r.peer, fmt.Sprintf("%dms", int64(math.Ceil(r.median))), fmt.Sprintf("±%.1fms", r.stdDev))
+		t.Row(r.machine, r.peer, tui.FormatRTT(r.median), formatRTTStdDev(r.stdDev))
 	}
 
 	fmt.Println(t)
 	return nil
+}
+
+// formatRTTStdDev formats a round-trip time standard deviation with one decimal place, e.g. "±19.4ms".
+func formatRTTStdDev(d time.Duration) string {
+	return fmt.Sprintf("±%.1fms", float64(d)/float64(time.Millisecond))
 }

@@ -345,7 +345,7 @@ func (c *Cluster) RemoveMachine(ctx context.Context, req *pb.RemoveMachineReques
 	return &emptypb.Empty{}, nil
 }
 
-// MemberRTTs returns the average and standard deviation of round-trip times from this member to each cluster member.
+// MemberRTTs returns the median and standard deviation of round-trip times from this member to each cluster member.
 func (c *Cluster) MemberRTTs() ([]corrosion.MemberRTTStats, error) {
 	return c.corroAdmin.ClusterMemberRTTs()
 }

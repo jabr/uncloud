@@ -3,7 +3,6 @@ package wg
 import (
 	"context"
 	"fmt"
-	"math"
 	"strings"
 	"time"
 
@@ -82,7 +81,7 @@ func runShow(ctx context.Context, uncli *cli.CLI, opts showOptions) error {
 		machinesByPublicKey[publicKey] = m.Machine
 	}
 
-	// Fetch the machine's info and RTTs for display
+	// Fetch the machine's info and RTTs for display.
 	var selfMachine *pb.MachineDetails
 	inspectResp, err := client.MachineClient.InspectMachine(ctx, nil)
 	if err == nil {
@@ -111,7 +110,7 @@ func runShow(ctx context.Context, uncli *cli.CLI, opts showOptions) error {
 			machineName = m.Name
 			if selfMachine != nil {
 				if stats, ok := selfMachine.Rtts[m.Id]; ok {
-					rtt = fmt.Sprintf("%dms", int64(math.Ceil(stats.Median)))
+					rtt = tui.FormatRTT(stats.Median.AsDuration())
 				}
 			}
 		}

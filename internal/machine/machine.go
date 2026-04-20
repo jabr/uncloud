@@ -42,6 +42,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -965,8 +966,8 @@ func (m *Machine) getMachineRTTs(ctx context.Context) (map[string]*pb.RTTStats, 
 		// Corrosion uses the management IP for gossip.
 		if mid, ok := ipToMachineID[stats.Addr.Addr()]; ok {
 			pbRTTs[mid] = &pb.RTTStats{
-				Median: stats.Median,
-				StdDev: stats.StdDev,
+				Median: durationpb.New(stats.Median),
+				StdDev: durationpb.New(stats.StdDev),
 			}
 		}
 	}
