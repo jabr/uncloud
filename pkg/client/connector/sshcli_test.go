@@ -109,11 +109,20 @@ func TestControlSocketPath(t *testing.T) {
 	assert.True(t, strings.HasSuffix(path1, ".sock"))
 	assert.Contains(t, path1, "%C")
 
-	t.Run("uses XDG_RUNTIME_DIR when set", func(t *testing.T) {
-		runDir := "/user/runtime/dir"
+	t.Run("uses XDG_RUNTIME_DIR when set and exists", func(t *testing.T) {
+		runDir := t.TempDir()
 		t.Setenv("XDG_RUNTIME_DIR", runDir)
 
 		path := controlSocketPath()
 		assert.True(t, strings.HasPrefix(path, runDir))
+	})
+
+	t.Run("falls back when XDG_RUNTIME_DIR is set but missing", func(t *testing.T) {
+		// WSL2 without systemd sets XDG_RUNTIME_DIR to a path that doesn't exist.
+		t.Setenv("XDG_RUNTIME_DIR", "/nonexistent/uncloud-test-xdg")
+
+		path := controlSocketPath()
+		assert.NotEmpty(t, path)
+		assert.False(t, strings.HasPrefix(path, "/nonexistent/"))
 	})
 }

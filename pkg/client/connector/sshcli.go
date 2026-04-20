@@ -45,9 +45,13 @@ func controlSocketPath() string {
 	// of the ProxyJump option. This ensures that shared connections are uniquely identified.
 	sockName := fmt.Sprintf("uc_control_%%C.sock")
 
-	// Prefer XDG_RUNTIME_DIR if set, fall back to ~/.ssh if it exists.
+	// Prefer XDG_RUNTIME_DIR if set and the directory exists, fall back to ~/.ssh if it exists.
 	if dir := os.Getenv("XDG_RUNTIME_DIR"); dir != "" {
-		return filepath.Join(dir, sockName)
+		// On WSL2 without systemd, XDG_RUNTIME_DIR may be set to /run/user/$UID that doesn't actually exist,
+		// so existence must be verified before use: https://github.com/psviderski/uncloud/issues/319.
+		if fi, err := os.Stat(dir); err == nil && fi.IsDir() {
+			return filepath.Join(dir, sockName)
+		}
 	}
 	if home, err := os.UserHomeDir(); err == nil {
 		sshDir := filepath.Join(home, ".ssh")
