@@ -38,10 +38,7 @@ func rtt(ctx context.Context, uncli *cli.CLI) error {
 	defer client.Close()
 
 	// Setup context to proxy request to all machines.
-	ctx, _, err = client.ProxyMachinesContext(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("setup proxy context: %w", err)
-	}
+	ctx = client.ProxyMachinesContext(ctx, nil)
 
 	resp, err := client.MachineClient.InspectMachine(ctx, &emptypb.Empty{})
 	if err != nil {
