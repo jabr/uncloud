@@ -10,6 +10,7 @@ import (
 
 	"charm.land/lipgloss/v2"
 	"github.com/docker/docker/pkg/stringid"
+	"github.com/psviderski/uncloud/internal/cli/tui"
 	"github.com/psviderski/uncloud/pkg/api"
 )
 
@@ -80,9 +81,9 @@ func (f *Formatter) formatMachine(name string) string {
 	return style.Render(name)
 }
 
-func (f *Formatter) formatServiceContainer(serviceName, containerID string) string {
-	styleService := lipgloss.NewStyle().Bold(true).PaddingRight(f.maxServiceWidth - len(serviceName))
-	styleContainer := lipgloss.NewStyle().Faint(true)
+func (f *Formatter) formatService(serviceName, containerID string) string {
+	styleService := lipgloss.NewStyle().Bold(true)
+	padding := f.maxServiceWidth - len(serviceName)
 
 	if len(f.serviceNames) > 1 {
 		// Service name is coloured for multi-service logs.
@@ -95,10 +96,15 @@ func (f *Formatter) formatServiceContainer(serviceName, containerID string) stri
 		styleService = styleService.Foreground(Palette[i%len(Palette)])
 	}
 
-	return styleService.Render(serviceName) + styleContainer.Render("["+containerID[:5]+"]")
+	// Journal logs are unit-scoped and have no container ID.
+	if containerID == "" {
+		return styleService.PaddingRight(padding).Render(serviceName)
+	}
+
+	return styleService.Render(serviceName) + tui.Faint.PaddingRight(padding).Render("/"+containerID[:5])
 }
 
-// printEntry prints a single log entry with proper formatting.
+// PrintEntry prints a single log entry with proper formatting.
 func (f *Formatter) PrintEntry(entry api.ServiceLogEntry) {
 	if entry.Stream != api.LogStreamStdout && entry.Stream != api.LogStreamStderr {
 		return
@@ -114,8 +120,8 @@ func (f *Formatter) PrintEntry(entry api.ServiceLogEntry) {
 	output.WriteString(f.formatMachine(entry.Metadata.MachineName))
 	output.WriteString(" ")
 
-	// Service[container_id]
-	output.WriteString(f.formatServiceContainer(entry.Metadata.ServiceName, entry.Metadata.ContainerID))
+	// Service/container_id or service name for a systemd service.
+	output.WriteString(f.formatService(entry.Metadata.ServiceName, entry.Metadata.ContainerID))
 	output.WriteString(" ")
 
 	// Message
@@ -131,23 +137,31 @@ func (f *Formatter) PrintEntry(entry api.ServiceLogEntry) {
 
 // PrintError prints an error entry (e.g., stalled stream warning).
 func (f *Formatter) PrintError(entry api.ServiceLogEntry) {
+	if entry.Metadata.ServiceName == "" {
+		msg := fmt.Sprintf("ERROR: %v", entry.Err)
+		style := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.BrightRed) // Bold bright red.
+		fmt.Fprintln(os.Stderr, style.Render(msg))
+		return
+	}
+
+	var msg string
 	if entry.Metadata.ContainerID != "" {
-		msg := fmt.Sprintf("WARNING: log stream from %s[%s] on machine '%s'",
+		msg = fmt.Sprintf("WARNING: log stream from container '%s/%s' on machine '%s'",
 			entry.Metadata.ServiceName,
 			stringid.TruncateID(entry.Metadata.ContainerID),
 			entry.Metadata.MachineName)
-
-		if errors.Is(entry.Err, api.ErrLogStreamStalled) {
-			msg += " stopped responding"
-		} else {
-			msg += fmt.Sprintf(": %v", entry.Err)
-		}
-
-		style := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("11")) // Bold bright yellow
-		fmt.Fprintln(os.Stderr, style.Render(msg))
 	} else {
-		msg := fmt.Sprintf("ERROR: %v", entry.Err)
-		style := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("9")) // Bold bright red
-		fmt.Fprintln(os.Stderr, style.Render(msg))
+		msg = fmt.Sprintf("WARNING: log stream from systemd service '%s' on machine '%s'",
+			entry.Metadata.ServiceName,
+			entry.Metadata.MachineName)
 	}
+
+	if errors.Is(entry.Err, api.ErrLogStreamStalled) {
+		msg += " stopped responding"
+	} else {
+		msg += fmt.Sprintf(": %v", entry.Err)
+	}
+
+	style := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("11")) // Bold bright yellow.
+	fmt.Fprintln(os.Stderr, style.Render(msg))
 }

@@ -4,40 +4,44 @@ View systemd service logs.
 
 ## Synopsis
 
-View logs from all replicas of the specified units(s) (uncloud, docker or uncloud-corrosion) across all machines in the cluster.
+View logs from the specified systemd service(s) across all machines in the cluster.
+Use -m to restrict to specific machines.
 
-If no units are specified, streams logs from the uncloud unit.
+Supported services:
+  uncloud            the Uncloud daemon
+  docker             the Docker daemon
+  uncloud-corrosion  the Corrosion distributed state store
+
+If no services are specified, streams logs from the uncloud service.
 
 ```
-uc machine logs [UNIT...] [flags]
+uc machine logs [SERVICE...] [flags]
 ```
 
 ## Examples
 
 ```
-  # View recent logs for a system service.
-  uc logs uncloud
+  # View recent logs for the uncloud service.
+  uc machine logs
+  uc machine logs uncloud
 
   # Stream logs in real-time (follow mode).
-  uc logs -f uncloud
+  uc machine logs -f uncloud
 
   # View logs from multiple services.
-  uc logs web uncloud docker
+  uc machine logs uncloud docker uncloud-corrosion
 
-  # View logs from uncloud
-  uc logs
-
-  # Show last 20 lines per replica (default is 100).
-  uc logs -n 20 docker
+  # Show last 20 lines per machine (default is 100).
+  uc machine logs -n 20 docker
 
   # Show all logs without line limit.
-  uc logs -n all docker
+  uc machine logs -n all docker
 
   # View logs from a specific time range.
-  uc logs --since 3h --until 1h30m docker
+  uc machine logs --since 3h --until 1h30m docker
 
-  # View logs only from replicas running on specific machines.
-  uc logs -m machine1,machine2 docker corrosion
+  # View logs only from specific machines.
+  uc machine logs -m machine1,machine2 uncloud uncloud-corrosion
 ```
 
 ## Options

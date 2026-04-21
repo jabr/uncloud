@@ -52,6 +52,8 @@ func (cli *Client) ServiceLogs(
 
 		stream, err := cli.ContainerLogs(ctx, ctr.MachineID, ctr.Container.ID, opts)
 		if err != nil {
+			// TODO: cancel already-opened streams. Currently they leak until ctx is cancelled which could
+			//  be critical when used as SDK.
 			return svc, nil, fmt.Errorf("stream logs from service container '%s' on machine '%s': %w",
 				stringid.TruncateID(ctr.Container.ID), machineName, err)
 		}
@@ -140,13 +142,51 @@ func (cli *Client) ContainerLogs(
 	return ch, nil
 }
 
-// MachineLogs streams journal logs from the unit on a specified machine.
+// MachineLogs streams journal logs for the given systemd service across one or more machines in
+// chronological order based on timestamps. If opts.Machines is empty, logs are streamed from all
+// machines in the cluster.
 func (cli *Client) MachineLogs(
-	ctx context.Context, machineNameOrID string, unit string, opts api.ServiceLogsOptions,
+	ctx context.Context, unit string, opts api.ServiceLogsOptions,
 ) (<-chan api.ServiceLogEntry, error) {
-	proxyCtx, _, err := cli.ProxyMachinesContext(ctx, []string{machineNameOrID})
+	machines, err := cli.ListMachines(ctx, &api.MachineFilter{NamesOrIDs: opts.Machines})
 	if err != nil {
-		return nil, fmt.Errorf("create request context to proxy to machine '%s': %w", machineNameOrID, err)
+		return nil, fmt.Errorf("list machines: %w", err)
+	}
+	if len(machines) == 0 {
+		return nil, errors.New("no machines found")
+	}
+
+	streams := make([]<-chan api.ServiceLogEntry, 0, len(machines))
+	for _, m := range machines {
+		ch, err := cli.systemdServiceLogs(ctx, m.Machine.Id, unit, opts)
+		if err != nil {
+			// TODO: cancel already-opened streams. Currently they leak until ctx is cancelled which could
+			//  be critical when used as SDK.
+			return nil, fmt.Errorf("stream logs from systemd service '%s' on machine '%s': %w",
+				unit, m.Machine.Name, err)
+		}
+
+		// Enrich journal log entries with the systemd service name and machine metadata.
+		metadata := api.ServiceLogEntryMetadata{
+			ServiceID:   unit,
+			ServiceName: unit,
+			MachineID:   m.Machine.Id,
+			MachineName: m.Machine.Name,
+		}
+		streams = append(streams, logsStreamWithServiceMetadata(ch, metadata))
+	}
+
+	merger := NewLogMerger(streams, DefaultLogMergerOptions)
+	return merger.Stream(), nil
+}
+
+// systemdServiceLogs streams log entries from a single systemd service on the specified machine.
+func (cli *Client) systemdServiceLogs(
+	ctx context.Context, machineID, unit string, opts api.ServiceLogsOptions,
+) (<-chan api.LogEntry, error) {
+	proxyCtx, _, err := cli.ProxyMachinesContext(ctx, []string{machineID})
+	if err != nil {
+		return nil, fmt.Errorf("create request context to proxy to machine '%s': %w", machineID, err)
 	}
 
 	req := &pb.LogsRequest{
@@ -167,17 +207,7 @@ func (cli *Client) MachineLogs(
 		return nil, err
 	}
 
-	// Enrich log entries from the machine with metadata.
-	metadata := api.ServiceLogEntryMetadata{
-		ServiceID:   "",
-		ServiceName: "",
-		ContainerID: unit,
-		MachineID:   machineNameOrID,
-		MachineName: machineNameOrID,
-	}
-
 	ch := make(chan api.LogEntry)
-
 	go func() {
 		defer close(ch)
 
@@ -187,9 +217,7 @@ func (cli *Client) MachineLogs(
 				return
 			}
 			if err != nil {
-				ch <- api.LogEntry{
-					Err: err,
-				}
+				ch <- api.LogEntry{Err: err}
 				return
 			}
 
@@ -207,8 +235,7 @@ func (cli *Client) MachineLogs(
 		}
 	}()
 
-	enrichedCh := logsStreamWithServiceMetadata(ch, metadata)
-	return enrichedCh, nil
+	return ch, nil
 }
 
 // logsStreamWithServiceMetadata wraps a container logs stream and enriches each log entry with service metadata.
