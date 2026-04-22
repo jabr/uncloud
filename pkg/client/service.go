@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"slices"
 	"sync"
 
@@ -125,8 +124,8 @@ func (cli *Client) InspectService(ctx context.Context, nameOrID string) (api.Ser
 
 		if mc.Metadata.Error != "" {
 			// TODO: return failed machines in the response.
-			fmt.Printf("WARNING: failed to list containers on machine '%s': %s\n",
-				mc.Metadata.MachineAddr, mc.Metadata.Error)
+			tui.PrintWarning(fmt.Sprintf("failed to list containers on machine '%s': %s",
+				mc.Metadata.MachineName, mc.Metadata.Error))
 			continue
 		}
 
@@ -135,8 +134,9 @@ func (cli *Client) InspectService(ctx context.Context, nameOrID string) (api.Ser
 		// Collect both regular and hook containers for the service.
 		for _, ctr := range append(mc.Containers, mc.HookContainers...) {
 			containers = append(containers, api.MachineServiceContainer{
-				MachineID: machineID,
-				Container: ctr,
+				MachineID:   machineID,
+				MachineName: mc.Metadata.MachineName,
+				Container:   ctr,
 			})
 
 			if ctr.ServiceID() == nameOrID {
@@ -354,8 +354,8 @@ func (cli *Client) ListServices(ctx context.Context) ([]api.Service, error) {
 
 		if mc.Metadata.Error != "" {
 			// TODO: return failed machines in the response.
-			fmt.Fprintf(os.Stderr, "WARNING: failed to list containers on machine '%s': %s\n",
-				mc.Metadata.MachineAddr, mc.Metadata.Error)
+			tui.PrintWarning(fmt.Sprintf("failed to list containers on machine '%s': %s",
+				mc.Metadata.MachineName, mc.Metadata.Error))
 			continue
 		}
 

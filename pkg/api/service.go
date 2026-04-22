@@ -515,8 +515,9 @@ type Service struct {
 }
 
 type MachineServiceContainer struct {
-	MachineID string
-	Container ServiceContainer
+	MachineID   string
+	MachineName string
+	Container   ServiceContainer
 }
 
 // MachineIDs returns a list of unique machine IDs where the service containers are running.
