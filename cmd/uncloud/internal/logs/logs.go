@@ -2,10 +2,9 @@ package logs
 
 import (
 	"fmt"
-	"image/color"
 	"strconv"
+	"strings"
 
-	"charm.land/lipgloss/v2"
 	"github.com/spf13/pflag"
 )
 
@@ -59,16 +58,59 @@ func Tail(tail string) (int, error) {
 	return tailInt, nil
 }
 
-// Available colors for machine/service differentiation.
-var Palette = []color.Color{
-	lipgloss.BrightGreen,
-	lipgloss.BrightYellow,
-	lipgloss.BrightBlue,
-	lipgloss.BrightMagenta,
-	lipgloss.BrightCyan,
-	lipgloss.Green,
-	lipgloss.Yellow,
-	lipgloss.Blue,
-	lipgloss.Magenta,
-	lipgloss.Cyan,
+// ServiceArg pairs a service name with the list of container filters parsed from `uc service logs` arguments.
+// An empty Containers slice means "stream logs from all containers of this service".
+type ServiceArg struct {
+	Service    string
+	Containers []string
+}
+
+// ParseServiceArgs groups raw `uc service logs` positional arguments into per-service entries,
+// preserving first-seen order. Each argument is either a service name (e.g. "web") or a
+// service/container reference (e.g. "web/61d57fd3428f").
+// Arguments for the same service are merged: if any argument for a service lacks a container suffix, all containers
+// of that service are streamed regardless of any other service/container arguments for it.
+func ParseServiceArgs(args []string) ([]ServiceArg, error) {
+	indexByService := make(map[string]int, len(args))
+	allContainers := make(map[string]bool, len(args))
+	result := make([]ServiceArg, 0, len(args))
+
+	for _, arg := range args {
+		arg = strings.TrimSpace(arg)
+		if arg == "" {
+			return nil, fmt.Errorf("empty service argument")
+		}
+
+		service, container, hasSlash := strings.Cut(arg, "/")
+		if service == "" {
+			return nil, fmt.Errorf("invalid service argument '%s': service name is empty", arg)
+		}
+		if hasSlash && container == "" {
+			return nil, fmt.Errorf("invalid service argument '%s': container name or ID is empty", arg)
+		}
+
+		idx, seen := indexByService[service]
+		if !seen {
+			entry := ServiceArg{Service: service}
+			if hasSlash {
+				entry.Containers = []string{container}
+			} else {
+				allContainers[service] = true
+			}
+			result = append(result, entry)
+			indexByService[service] = len(result) - 1
+			continue
+		}
+
+		if !hasSlash {
+			result[idx].Containers = nil
+			allContainers[service] = true
+			continue
+		}
+		if !allContainers[service] {
+			result[idx].Containers = append(result[idx].Containers, container)
+		}
+	}
+
+	return result, nil
 }

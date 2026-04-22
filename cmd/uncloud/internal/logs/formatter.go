@@ -3,6 +3,7 @@ package logs
 import (
 	"errors"
 	"fmt"
+	"image/color"
 	"os"
 	"slices"
 	"strings"
@@ -75,7 +76,7 @@ func (f *Formatter) formatMachine(name string) string {
 			i = len(f.machineNames) - 1
 		}
 
-		style = style.Foreground(Palette[i%len(Palette)])
+		style = style.Foreground(palette[i%len(palette)])
 	}
 
 	return style.Render(name)
@@ -93,7 +94,7 @@ func (f *Formatter) formatService(serviceName, containerID string) string {
 			i = len(f.serviceNames) - 1
 		}
 
-		styleService = styleService.Foreground(Palette[i%len(Palette)])
+		styleService = styleService.Foreground(palette[i%len(palette)])
 	}
 
 	// Journal logs are unit-scoped and have no container ID.
@@ -164,4 +165,18 @@ func (f *Formatter) PrintError(entry api.ServiceLogEntry) {
 
 	style := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("11")) // Bold bright yellow.
 	fmt.Fprintln(os.Stderr, style.Render(msg))
+}
+
+// palette is available colors for machine/service differentiation.
+var palette = []color.Color{
+	lipgloss.BrightGreen,
+	lipgloss.BrightYellow,
+	lipgloss.BrightBlue,
+	lipgloss.BrightMagenta,
+	lipgloss.BrightCyan,
+	lipgloss.Green,
+	lipgloss.Yellow,
+	lipgloss.Blue,
+	lipgloss.Magenta,
+	lipgloss.Cyan,
 }

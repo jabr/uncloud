@@ -20,10 +20,13 @@ func NewLogsCommand(groupID string) *cobra.Command {
 	var options logs.Options
 
 	cmd := &cobra.Command{
-		Use:     "logs [SERVICE...]",
+		Use:     "logs [SERVICE[/CONTAINER]...]",
 		Aliases: []string{"log"},
 		Short:   "View service logs.",
 		Long: `View logs from all replicas of the specified service(s) across all machines in the cluster.
+
+To view logs from specific replicas (containers) within a service, use the SERVICE/CONTAINER form,
+where CONTAINER is a container name, full ID, or unique ID prefix.
 
 If no services are specified, streams logs from all services defined in the Compose file
 (compose.yaml by default or the file(s) specified with --file).`,
@@ -48,6 +51,9 @@ If no services are specified, streams logs from all services defined in the Comp
   # View logs from a specific time range.
   uc logs --since 3h --until 1h30m web
 
+  # View logs only from specific replicas (containers).
+  uc logs web/61d57fd3428f api/2f60
+
   # View logs only from replicas running on specific machines.
   uc logs -m machine1,machine2 web api`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -64,10 +70,15 @@ If no services are specified, streams logs from all services defined in the Comp
 	return cmd
 }
 
-func runLogs(ctx context.Context, uncli *cli.CLI, serviceNames []string, opts logs.Options) error {
+func runLogs(ctx context.Context, uncli *cli.CLI, args []string, opts logs.Options) error {
+	serviceArgs, err := logs.ParseServiceArgs(args)
+	if err != nil {
+		return err
+	}
+
 	// If no services specified, try to load them from the Compose file(s).
 	fromCompose := false
-	if len(serviceNames) == 0 {
+	if len(serviceArgs) == 0 {
 		fromCompose = true
 		project, err := compose.LoadProject(ctx, opts.Files)
 		if err != nil {
@@ -77,9 +88,14 @@ func runLogs(ctx context.Context, uncli *cli.CLI, serviceNames []string, opts lo
 		uncli.SetClusterContextIfUnset(compose.ClusterContext(project))
 
 		// View logs for all services, including disabled by inactive profiles.
-		serviceNames = append(project.ServiceNames(), project.DisabledServiceNames()...)
-		if len(serviceNames) == 0 {
+		composeServices := append(project.ServiceNames(), project.DisabledServiceNames()...)
+		if len(composeServices) == 0 {
 			return errors.New("no services found in Compose file(s)")
+		}
+
+		serviceArgs = make([]logs.ServiceArg, len(composeServices))
+		for i, name := range composeServices {
+			serviceArgs[i] = logs.ServiceArg{Service: name}
 		}
 	}
 
@@ -95,7 +111,7 @@ func runLogs(ctx context.Context, uncli *cli.CLI, serviceNames []string, opts lo
 	}
 	defer c.Close()
 
-	logsOpts := api.ServiceLogsOptions{
+	baseOpts := api.ServiceLogsOptions{
 		Follow:   opts.Follow,
 		Tail:     tail,
 		Since:    opts.Since,
@@ -106,20 +122,23 @@ func runLogs(ctx context.Context, uncli *cli.CLI, serviceNames []string, opts lo
 	// Collect log streams from all services. When service names come from a Compose file,
 	// skip the ones that are not found in the cluster (they may have been removed or not deployed yet).
 	machineIDsSet := mapset.NewSet[string]()
-	svcStreams := make([]<-chan api.ServiceLogEntry, 0, len(serviceNames))
+	svcStreams := make([]<-chan api.ServiceLogEntry, 0, len(serviceArgs))
 	var foundServices, notFoundServices []string
 
-	for _, serviceName := range serviceNames {
-		svc, ch, err := c.ServiceLogs(ctx, serviceName, logsOpts)
+	for _, sa := range serviceArgs {
+		svcOpts := baseOpts
+		svcOpts.Containers = sa.Containers
+
+		svc, ch, err := c.ServiceLogs(ctx, sa.Service, svcOpts)
 		if err != nil {
 			if errors.Is(err, api.ErrNotFound) && fromCompose {
-				notFoundServices = append(notFoundServices, serviceName)
+				notFoundServices = append(notFoundServices, sa.Service)
 				continue
 			}
-			return fmt.Errorf("stream logs for service '%s': %w", serviceName, err)
+			return fmt.Errorf("stream logs for service '%s': %w", sa.Service, err)
 		}
 		svcStreams = append(svcStreams, ch)
-		foundServices = append(foundServices, serviceName)
+		foundServices = append(foundServices, sa.Service)
 
 		machineIDs := svc.MachineIDs()
 		machineIDsSet.Append(machineIDs...)
@@ -130,7 +149,6 @@ func runLogs(ctx context.Context, uncli *cli.CLI, serviceNames []string, opts lo
 			return fmt.Errorf("stream logs for services defined in %s: no services found in the cluster",
 				strings.Join(opts.Files, ", "))
 		}
-		serviceNames = foundServices
 
 		for _, name := range notFoundServices {
 			tui.PrintWarning(fmt.Sprintf("service '%s' not found in the cluster, skipping", name))
@@ -138,7 +156,7 @@ func runLogs(ctx context.Context, uncli *cli.CLI, serviceNames []string, opts lo
 	}
 
 	var stream <-chan api.ServiceLogEntry
-	if len(serviceNames) == 1 {
+	if len(svcStreams) == 1 {
 		stream = svcStreams[0]
 	} else {
 		// Merge all service streams into a single sorted stream without stall detection as its handled per-service.
@@ -147,6 +165,8 @@ func runLogs(ctx context.Context, uncli *cli.CLI, serviceNames []string, opts lo
 	}
 
 	// Fetch machine names for all machines (machineIDsSet) service containers are running on.
+	// Note: this is the full set per service, not narrowed by --machine or per-container filters,
+	// so the formatter may pad columns wider than strictly needed when filters are active.
 	machines, err := c.ListMachines(ctx, &api.MachineFilter{NamesOrIDs: machineIDsSet.ToSlice()})
 	if err != nil {
 		return fmt.Errorf("list machines: %w", err)
@@ -156,7 +176,7 @@ func runLogs(ctx context.Context, uncli *cli.CLI, serviceNames []string, opts lo
 		machineNames = append(machineNames, m.Machine.Name)
 	}
 
-	formatter := logs.NewFormatter(machineNames, serviceNames, opts.UTC)
+	formatter := logs.NewFormatter(machineNames, foundServices, opts.UTC)
 
 	// Print merged logs.
 	for entry := range stream {

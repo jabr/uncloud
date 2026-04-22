@@ -46,12 +46,16 @@ func LogStreamTypeToProto(s LogStreamType) pb.LogEntry_StreamType {
 	}
 }
 
-// ServiceLogsOptions specifies parameters for ServiceLogs.
+// ServiceLogsOptions specifies parameters for ServiceLogs and MachineLogs.
 type ServiceLogsOptions struct {
 	Follow bool
 	Tail   int
 	Since  string
 	Until  string
+	// Containers filters logs to only include the specified service containers (names, full IDs,
+	// or unique ID prefixes). If empty, logs from all containers in the service are included.
+	// Ignored by MachineLogs.
+	Containers []string
 	// Machines filters logs to only include containers running on the specified machines (names or IDs).
 	// If empty, logs from all machines are included.
 	Machines []string

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
+	"slices"
 
 	"github.com/docker/docker/pkg/stringid"
 	"github.com/psviderski/uncloud/internal/machine/api/pb"
@@ -24,9 +26,23 @@ func (cli *Client) ServiceLogs(
 		return svc, nil, fmt.Errorf("inspect service: %w", err)
 	}
 
-	allContainers := append(svc.Containers, svc.HookContainers...)
-	if len(allContainers) == 0 {
+	containers := append(svc.Containers, svc.HookContainers...)
+	if len(containers) == 0 {
 		return svc, nil, fmt.Errorf("no containers found for service: %s", serviceNameOrID)
+	}
+
+	if len(opts.Containers) > 0 {
+		selected := make(map[string]api.MachineServiceContainer, len(opts.Containers))
+		for _, nameOrID := range opts.Containers {
+			ctr, err := svc.FindContainer(nameOrID)
+			if err != nil {
+				return svc, nil, fmt.Errorf("find container '%s' in service '%s': %w",
+					nameOrID, serviceNameOrID, err)
+			}
+			selected[ctr.Container.ID] = ctr
+		}
+
+		containers = slices.Collect(maps.Values(selected))
 	}
 
 	machines, err := cli.ListMachines(ctx, &api.MachineFilter{
@@ -36,8 +52,8 @@ func (cli *Client) ServiceLogs(
 		return svc, nil, fmt.Errorf("list machines: %w", err)
 	}
 
-	ctrStreams := make([]<-chan api.ServiceLogEntry, 0, len(allContainers))
-	for _, ctr := range allContainers {
+	ctrStreams := make([]<-chan api.ServiceLogEntry, 0, len(containers))
+	for _, ctr := range containers {
 		// Skip containers not running on the specified machines.
 		m := machines.FindByNameOrID(ctr.MachineID)
 		if len(opts.Machines) > 0 && m == nil {
