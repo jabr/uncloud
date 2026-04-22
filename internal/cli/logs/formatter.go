@@ -82,7 +82,7 @@ func (f *Formatter) formatMachine(name string) string {
 	return style.Render(name)
 }
 
-func (f *Formatter) formatService(serviceName, containerID string) string {
+func (f *Formatter) formatService(serviceName, containerID, hook string) string {
 	styleService := lipgloss.NewStyle().Bold(true)
 	padding := f.maxServiceWidth - len(serviceName)
 
@@ -102,7 +102,11 @@ func (f *Formatter) formatService(serviceName, containerID string) string {
 		return styleService.PaddingRight(padding).Render(serviceName)
 	}
 
-	return styleService.Render(serviceName) + tui.Faint.PaddingRight(padding).Render("/"+containerID[:5])
+	out := styleService.Render(serviceName) + tui.Faint.PaddingRight(padding).Render("/"+containerID[:5])
+	if hook != "" {
+		out += tui.Faint.Render(" [" + hook + "]")
+	}
+	return out
 }
 
 // PrintEntry prints a single log entry with proper formatting.
@@ -126,7 +130,7 @@ func (f *Formatter) PrintEntry(entry api.ServiceLogEntry) {
 	output.WriteString(" ")
 
 	// Service/container_id or service name for a systemd service.
-	output.WriteString(f.formatService(entry.Metadata.ServiceName, entry.Metadata.ContainerID))
+	output.WriteString(f.formatService(entry.Metadata.ServiceName, entry.Metadata.ContainerID, entry.Metadata.Hook))
 	output.WriteString(" ")
 
 	// Message

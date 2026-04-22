@@ -81,6 +81,7 @@ func (cli *Client) ServiceLogs(
 			ContainerID: ctr.Container.ID,
 			MachineID:   ctr.MachineID,
 			MachineName: machineName,
+			Hook:        ctr.Container.Config.Labels[api.LabelHook],
 		}
 		enrichedStream := logsStreamWithServiceMetadata(stream, metadata)
 		ctrStreams = append(ctrStreams, enrichedStream)

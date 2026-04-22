@@ -76,6 +76,8 @@ type ServiceLogEntryMetadata struct {
 	ContainerID string
 	MachineID   string
 	MachineName string
+	// Hook is the hook type of the source container (e.g., "pre-deploy"). Empty for non-hook containers.
+	Hook string
 }
 
 // LogEntry represents a single log entry from a container or a service.
