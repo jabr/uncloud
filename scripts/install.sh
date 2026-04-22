@@ -204,7 +204,7 @@ install_uncloud_systemd() {
     cat > "${uncloud_service_path}" << EOF
 [Unit]
 Description=Uncloud machine daemon
-After=network-online.target
+After=network-online.target docker.service
 Wants=network-online.target
 
 [Service]
