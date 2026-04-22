@@ -10,12 +10,19 @@ import (
 	composecli "github.com/compose-spec/compose-go/v2/cli"
 	"github.com/docker/compose/v2/pkg/progress"
 	"github.com/psviderski/uncloud/internal/cli"
+	"github.com/psviderski/uncloud/internal/cli/logs"
 	"github.com/psviderski/uncloud/internal/cli/tui"
+	"github.com/psviderski/uncloud/pkg/api"
 	"github.com/psviderski/uncloud/pkg/client"
 	"github.com/psviderski/uncloud/pkg/client/compose"
 	"github.com/psviderski/uncloud/pkg/client/deploy"
+	"github.com/psviderski/uncloud/pkg/client/deploy/operation"
 	"github.com/spf13/cobra"
 )
+
+// failedContainerLogsTail is the number of recent log lines to print from a failed container to give the user immediate
+// context without requiring a follow-up 'uc logs' invocation.
+const failedContainerLogsTail = 10
 
 type deployOptions struct {
 	cli.BuildServicesOptions
@@ -223,10 +230,48 @@ func runDeploy(ctx context.Context, uncli *cli.CLI, opts deployOptions) error {
 	if deployTarget != "" {
 		title += " to " + tui.NameStyle.Render(deployTarget)
 	}
-	return progress.RunWithTitle(ctx, func(ctx context.Context) error {
+	err = progress.RunWithTitle(ctx, func(ctx context.Context) error {
 		if err := plan.Execute(ctx, clusterClient); err != nil {
 			return fmt.Errorf("deploy services: %w", err)
 		}
 		return nil
 	}, uncli.ProgressOut(), title)
+	if err != nil {
+		fmt.Println()
+		if hookErr, ok := errors.AsType[*operation.PreDeployHookError](err); ok {
+			printPreDeployHookLogs(ctx, clusterClient, hookErr)
+			fmt.Println()
+		}
+		return err
+	}
+	return nil
+}
+
+// printPreDeployHookLogs fetches the last log lines from the failed pre-deploy hook container and prints them using
+// the standard log formatter.
+func printPreDeployHookLogs(ctx context.Context, cli *client.Client, hookErr *operation.PreDeployHookError) {
+	_, ch, err := cli.ServiceLogs(ctx, hookErr.ServiceName, api.ServiceLogsOptions{
+		Containers: []string{hookErr.ContainerID},
+		Machines:   []string{hookErr.MachineName},
+		Tail:       failedContainerLogsTail,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to fetch pre-deploy hook logs: %v\n", err)
+		fmt.Fprintf(os.Stderr, "You can try manually with: uc logs %s\n", hookErr.ServiceName)
+		return
+	}
+
+	header := fmt.Sprintf("Last %d log lines from failed pre-deploy hook:", failedContainerLogsTail)
+	fmt.Println(tui.BoldRed.Render(header))
+
+	logsEmpty := true
+	formatter := logs.NewFormatter([]string{hookErr.MachineName}, []string{hookErr.ServiceName}, false)
+	for entry := range ch {
+		logsEmpty = false
+		formatter.PrintEntry(entry)
+	}
+
+	if logsEmpty {
+		fmt.Println("<no logs available>")
+	}
 }
