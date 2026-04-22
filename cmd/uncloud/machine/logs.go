@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/psviderski/uncloud/cmd/uncloud/internal/logs"
 	"github.com/psviderski/uncloud/internal/cli"
+	"github.com/psviderski/uncloud/internal/cli/logs"
 	"github.com/psviderski/uncloud/internal/journal"
 	"github.com/psviderski/uncloud/pkg/api"
 	"github.com/psviderski/uncloud/pkg/client"
