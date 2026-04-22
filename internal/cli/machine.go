@@ -106,21 +106,21 @@ func promptResetMachine() error {
 			"use --yes flag or set UNCLOUD_AUTO_CONFIRM=true to auto-confirm")
 	}
 
+	fmt.Println(tui.Red.Render("The remote machine is already initialised as a cluster member. Resetting it will:\n" +
+		"- Remove all service containers from the machine\n" +
+		"- Reset the machine to the uninitialised state"))
+
 	var confirm bool
 	form := huh.NewForm(
 		huh.NewGroup(
 			huh.NewConfirm().
-				Title(
-					"The remote machine is already initialised as a cluster member. Do you want to reset it first?\n" +
-						"This will:\n" +
-						"- Remove all service containers from the machine\n" +
-						"- Reset the machine to the uninitialised state",
-				).
+				Title("Do you want to reset it first?").
 				Affirmative("Yes!").
 				Negative("No").
 				Value(&confirm),
 		),
-	).WithAccessible(true)
+	).WithTheme(tui.ThemeConfirmDanger()).
+		WithAccessible(true)
 	if err := form.Run(); err != nil {
 		return fmt.Errorf("prompt user to confirm: %w", err)
 	}
