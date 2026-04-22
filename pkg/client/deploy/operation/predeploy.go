@@ -24,6 +24,10 @@ type PreDeployHookError struct {
 	MachineName string
 }
 
+func (e *PreDeployHookError) Unwrap() error {
+	return e.error
+}
+
 // DefaultPreDeployTimeout is the maximum duration to wait for a pre-deploy hook container to complete.
 const DefaultPreDeployTimeout = 5 * time.Minute
 
