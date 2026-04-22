@@ -107,6 +107,10 @@ func (f *Formatter) formatService(serviceName, containerID string) string {
 
 // PrintEntry prints a single log entry with proper formatting.
 func (f *Formatter) PrintEntry(entry api.ServiceLogEntry) {
+	if entry.Err != nil {
+		f.printError(entry)
+		return
+	}
 	if entry.Stream != api.LogStreamStdout && entry.Stream != api.LogStreamStderr {
 		return
 	}
@@ -136,11 +140,11 @@ func (f *Formatter) PrintEntry(entry api.ServiceLogEntry) {
 	}
 }
 
-// PrintError prints an error entry (e.g., stalled stream warning).
-func (f *Formatter) PrintError(entry api.ServiceLogEntry) {
+// printError prints an error entry (e.g., stalled stream warning).
+func (f *Formatter) printError(entry api.ServiceLogEntry) {
 	if entry.Metadata.ServiceName == "" {
 		msg := fmt.Sprintf("ERROR: %v", entry.Err)
-		style := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.BrightRed) // Bold bright red.
+		style := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.BrightRed)
 		fmt.Fprintln(os.Stderr, style.Render(msg))
 		return
 	}
@@ -163,7 +167,7 @@ func (f *Formatter) PrintError(entry api.ServiceLogEntry) {
 		msg += fmt.Sprintf(": %v", entry.Err)
 	}
 
-	style := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("11")) // Bold bright yellow.
+	style := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.BrightYellow)
 	fmt.Fprintln(os.Stderr, style.Render(msg))
 }
 

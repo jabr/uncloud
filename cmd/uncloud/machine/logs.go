@@ -125,10 +125,6 @@ func runLogs(ctx context.Context, uncli *cli.CLI, units []string, opts logs.Opti
 
 	// Print merged logs.
 	for entry := range stream {
-		if entry.Err != nil {
-			formatter.PrintError(entry)
-			continue
-		}
 		formatter.PrintEntry(entry)
 	}
 
