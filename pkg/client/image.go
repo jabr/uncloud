@@ -238,8 +238,15 @@ func (cli *Client) pushImageToMachine(
 	proxyEventID := fmt.Sprintf("Proxy to unregistry on %s", boldStyle.Render(machine.Name))
 	pw.Event(progress.StartingEvent(proxyEventID))
 
+	// The proxy runs in a goroutine. Capture the first error in a channel
+	// so we can surface it alongside the push error if push fails.
+	proxyErrCh := make(chan error, 1)
 	// Forward local port 127.0.0.1:PORT to the machine's unregistry over the established client connection.
 	unregProxy, err := newUnregistryProxy(ctx, unregistryAddr, dialer, func(err error) {
+		select {
+		case proxyErrCh <- fmt.Errorf("proxy to unregistry: %w", err):
+		default:
+		}
 		pw.Event(progress.NewEvent(proxyEventID, progress.Error, err.Error()))
 	})
 	if err != nil {
@@ -321,6 +328,13 @@ func (cli *Client) pushImageToMachine(
 	for msg := range pushCh {
 		if msg.Err != nil {
 			pw.Event(progress.NewEvent(pushEventID, progress.Error, msg.Err.Error()))
+			// Include the proxy error (if any) to expose the root cause behind a generic push failure.
+			select {
+			case proxyErr := <-proxyErrCh:
+				return fmt.Errorf("push image: %w", errors.Join(msg.Err, proxyErr))
+			default:
+			}
+
 			return fmt.Errorf("push image: %w", msg.Err)
 		}
 
