@@ -101,8 +101,7 @@ func (d *Director) Director(ctx context.Context, fullMethodName string) (proxy.M
 
 // mapErrorToStatus converts mapper errors to appropriate gRPC status errors.
 func mapErrorToStatus(err error) error {
-	var notFound *MachinesNotFoundError
-	if errors.As(err, &notFound) {
+	if notFound, ok := errors.AsType[*MachinesNotFoundError](err); ok {
 		return status.Error(codes.InvalidArgument, notFound.Error())
 	}
 	// Check if already a gRPC status error.
