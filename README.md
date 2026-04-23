@@ -49,13 +49,13 @@ complexity of Kubernetes.
 
 ## 🎬 Quick demo
 
-The screenshot below demonstrates how I use Uncloud to deploy https://uncloud.run website to 2 remote machines from
-the [`compose.yaml`](website/compose.yaml) file on my local machine.
+The screenshot below demonstrates how we use Uncloud to deploy https://uncloud.run website to 2 remote machines from
+the [`compose.yaml`](website/compose.yaml) file on the local machine.
 
-It exposes the container port `8000/tcp` as HTTPS on the domain `uncloud.run`, served by the Caddy reverse proxy on the
+It exposes the container port `8000/tcp` as HTTPS on `uncloud.run` domain, served by the Caddy reverse proxy on the
 remote machines. All managed by Uncloud.
 
-![Uncloud compose deployment demo](.github/images/compose-deploy.jpg)
+![Uncloud compose deployment demo](.github/images/website-deploy.jpg)
 
 Here is a more advanced use case. Deploy a highly available web app with automatic HTTPS across multiple regions and
 on-premises in just a couple minutes.
