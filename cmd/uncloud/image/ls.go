@@ -260,6 +260,14 @@ func formatImageTable(rows []imageRow) string {
 		columns[5].hide = true
 	}
 
+	// Hide the "STORE" column if all machines use the containerd store.
+	hasNonContainerd := slices.ContainsFunc(rows, func(r imageRow) bool {
+		return r.store != "containerd"
+	})
+	if !hasNonContainerd {
+		columns[6].hide = true
+	}
+
 	t := tui.NewTable()
 
 	var headers []string
