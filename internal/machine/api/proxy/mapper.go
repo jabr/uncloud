@@ -48,6 +48,10 @@ func NewCorrosionMapper(store Store) *CorrosionMapper {
 }
 
 func (m *CorrosionMapper) MapMachines(ctx context.Context, namesOrIDs []string) ([]MachineTarget, error) {
+	if len(namesOrIDs) == 0 {
+		return nil, fmt.Errorf("no machines specified")
+	}
+
 	machines, err := m.store.ListMachines(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list machines: %w", err)
@@ -67,6 +71,9 @@ func (m *CorrosionMapper) MapMachines(ctx context.Context, namesOrIDs []string) 
 	}
 
 	if slices.Contains(namesOrIDs, "*") {
+		if len(allTargets) == 0 {
+			return nil, fmt.Errorf("no machines in cluster")
+		}
 		return allTargets, nil
 	}
 

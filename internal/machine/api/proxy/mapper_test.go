@@ -122,6 +122,13 @@ func TestCorrosionMapper_MapMachines(t *testing.T) {
 			errMsg:  "machine not found: missing",
 		},
 		{
+			name:    "wildcard with no machines",
+			store:   &mockStore{machines: []*pb.MachineInfo{}},
+			input:   []string{"*"},
+			wantErr: true,
+			errMsg:  "no machines in cluster",
+		},
+		{
 			name:    "store error",
 			store:   &mockStore{err: errors.New("store down")},
 			input:   []string{"*"},
@@ -136,10 +143,11 @@ func TestCorrosionMapper_MapMachines(t *testing.T) {
 			errMsg:  "invalid management IP for machine bad-ip",
 		},
 		{
-			name:  "empty input returns empty",
-			store: &mockStore{machines: machines},
-			input: []string{},
-			want:  []MachineTarget{},
+			name:    "empty input returns error",
+			store:   &mockStore{machines: machines},
+			input:   []string{},
+			wantErr: true,
+			errMsg:  "no machines specified",
 		},
 	}
 
