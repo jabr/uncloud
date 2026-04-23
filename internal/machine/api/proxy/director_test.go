@@ -185,6 +185,19 @@ func TestDirector_Director(t *testing.T) {
 		assert.Contains(t, st.Message(), "no machines specified")
 	})
 
+	t.Run("both machine and machines set", func(t *testing.T) {
+		md := metadata.Pairs("machine", "m1", "machines", "m1", "machines", "m2")
+		ctx := metadata.NewIncomingContext(context.Background(), md)
+
+		_, _, err := d.Director(ctx, "/Test/Method")
+
+		require.Error(t, err)
+		st, ok := status.FromError(err)
+		require.True(t, ok)
+		assert.Equal(t, codes.InvalidArgument, st.Code())
+		assert.Contains(t, st.Message(), "both 'machine' and 'machines' proxy metadata are set")
+	})
+
 	t.Run("machines not found", func(t *testing.T) {
 		d.mapper = &mockMapper{err: &MachinesNotFoundError{NotFound: []string{"missing"}}}
 

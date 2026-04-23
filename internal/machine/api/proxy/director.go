@@ -56,6 +56,10 @@ func (d *Director) Director(ctx context.Context, fullMethodName string) (proxy.M
 
 	// Handle singular "machine" case (One2One, no metadata injection)
 	if hasMachine && len(machine) > 0 {
+		if hasMachines && len(machines) > 0 {
+			return proxy.One2One, nil, status.Error(codes.InvalidArgument,
+				"both 'machine' and 'machines' proxy metadata are set")
+		}
 		targets, err := d.mapper.MapMachines(ctx, machine)
 		if err != nil {
 			return proxy.One2One, nil, mapErrorToStatus(err)
