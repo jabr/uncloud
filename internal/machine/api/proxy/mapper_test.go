@@ -93,6 +93,14 @@ func TestCorrosionMapper_MapMachines(t *testing.T) {
 			},
 		},
 		{
+			name:  "deduplicates name and id for same machine",
+			store: &mockStore{machines: machines},
+			input: []string{"machine-a", "id-1"},
+			want: []MachineTarget{
+				{ID: "id-1", Name: "machine-a", Addr: "fd00::1"},
+			},
+		},
+		{
 			name:    "not found single",
 			store:   &mockStore{machines: machines},
 			input:   []string{"missing"},

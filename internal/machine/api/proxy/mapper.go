@@ -77,19 +77,17 @@ func (m *CorrosionMapper) MapMachines(ctx context.Context, namesOrIDs []string) 
 		targetByLookup[t.Name] = t
 	}
 
-	// Resolve each requested machine
+	// Resolve each requested machine.
 	targets := make([]MachineTarget, 0, len(namesOrIDs))
 	var notFound []string
-	seen := make(map[string]bool, len(namesOrIDs))
+	seenTarget := make(map[string]bool, len(namesOrIDs))
 
 	for _, nameOrID := range namesOrIDs {
-		if seen[nameOrID] {
-			continue
-		}
-		seen[nameOrID] = true
-
 		if t, ok := targetByLookup[nameOrID]; ok {
-			targets = append(targets, t)
+			if !seenTarget[t.ID] {
+				targets = append(targets, t)
+				seenTarget[t.ID] = true
+			}
 		} else {
 			notFound = append(notFound, nameOrID)
 		}
