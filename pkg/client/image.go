@@ -22,6 +22,7 @@ import (
 	"github.com/docker/docker/pkg/jsonmessage"
 	"github.com/docker/go-connections/nat"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/psviderski/uncloud/internal/cli/tui"
 	"github.com/psviderski/uncloud/internal/docker"
 	"github.com/psviderski/uncloud/internal/machine/api/pb"
 	"github.com/psviderski/uncloud/internal/machine/constants"
@@ -73,11 +74,13 @@ func (cli *Client) ListImages(ctx context.Context, filter api.ImageFilter) ([]ap
 	for _, msg := range resp.Messages {
 		// NOTE: Metadata should never be nil in practice. This is legacy fallback that will be removed.
 		if msg.Metadata == nil {
+			tui.PrintWarning("metadata is missing in response from unknown server")
 			continue
 		}
 
 		if msg.Metadata.Error != "" {
 			// TODO: any reason to not return these and let the caller decide what to do?
+			tui.PrintWarning(fmt.Sprintf("failed to list images on machine %s: %s", msg.Metadata.MachineName, msg.Metadata.Error))
 			continue
 		}
 
