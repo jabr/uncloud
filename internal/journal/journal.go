@@ -47,7 +47,7 @@ func logs(ctx context.Context, unit string, opts api.ServiceLogsOptions) (io.Rea
 	}
 
 	args = append(args, "-o")
-	args = append(args, "short-iso-precise")
+	args = append(args, "short-unix")
 
 	if opts.Since != "" {
 		args = append(args, "-S")
