@@ -16,6 +16,7 @@ services:
 
           reverse_proxy {{upstreams 8000}} {
               import common_proxy
+              lb_policy first
           }
           log
       }
