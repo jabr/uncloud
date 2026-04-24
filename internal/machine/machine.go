@@ -1213,7 +1213,6 @@ func (m *Machine) MachineLogs(
 				return status.Errorf(codes.Internal, "send log stream heartbeat: %v", err)
 			}
 			lastSent = heartbeat.Timestamp.AsTime()
-			log.Debug("Sent log stream heartbeat.", "timestamp", lastSent)
 
 		case <-ctx.Done():
 			return status.Error(codes.Canceled, ctx.Err().Error())
