@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
@@ -13,14 +14,11 @@ import (
 	"github.com/psviderski/uncloud/internal/cli/tui"
 	"github.com/psviderski/uncloud/internal/machine/api/pb"
 	"github.com/psviderski/uncloud/internal/sshexec"
+	"github.com/psviderski/uncloud/scripts"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
 
-const (
-	// TODO: support pinning the script version to the CLI version.
-	installScriptURL = "https://raw.githubusercontent.com/psviderski/uncloud/refs/heads/main/scripts/install.sh"
-	rootUser         = "root"
-)
+const rootUser = "root"
 
 type RemoteMachine struct {
 	User     string
@@ -30,26 +28,30 @@ type RemoteMachine struct {
 	UseSSHGo bool // Use Go's built-in SSH library instead of the system ssh CLI command.
 }
 
-func installCmd(user string, version string) string {
+// installCmd returns a shell command that decodes the base64-encoded install script and pipes it
+// into bash, optionally via sudo and with UNCLOUD_* environment variables set.
+func installCmd(scriptBase64, user, version string) string {
 	sudoPrefix := ""
 	var env []string
 
 	// Add the SSH user (non-root) to the uncloud group to allow access to the Uncloud daemon unix socket.
 	if user != rootUser {
-		sudoPrefix = "sudo"
+		sudoPrefix = "sudo "
 		env = append(env, "UNCLOUD_GROUP_ADD_USER="+sshexec.Quote(user))
 	}
 	if version != "" {
 		env = append(env, "UNCLOUD_VERSION="+sshexec.Quote(version))
 	}
 
-	envCmd := strings.Join(env, " ")
-	curlBashCmd := fmt.Sprintf("curl -fsSL %s | %s %s bash", sshexec.Quote(installScriptURL), sudoPrefix, envCmd)
+	envPrefix := ""
+	if len(env) > 0 {
+		envPrefix = strings.Join(env, " ") + " "
+	}
 
-	return curlBashCmd
+	return fmt.Sprintf("printf '%%s' %s | base64 -d | %s%sbash", scriptBase64, sudoPrefix, envPrefix)
 }
 
-// provisionMachine provisions the remote machine by downloading the Uncloud install script from GitHub and running it.
+// provisionMachine provisions the remote machine by running the Uncloud install script embedded in the uc CLI.
 // If version is specified, it will be passed to the install script as UNCLOUD_VERSION environment variable.
 func provisionMachine(ctx context.Context, exec sshexec.Executor, version string) error {
 	user, err := exec.Run(ctx, "whoami")
@@ -88,13 +90,10 @@ func provisionMachine(ctx context.Context, exec sshexec.Executor, version string
 		}
 	}
 
-	cmd := installCmd(user, version)
-
-	fmt.Println("Downloading Uncloud install script:", installScriptURL)
-
-	cmd = sshexec.QuoteCommand("bash", "-c", "set -o pipefail; "+cmd)
+	scriptBase64 := base64.StdEncoding.EncodeToString([]byte(scripts.InstallScript))
+	cmd := sshexec.QuoteCommand("bash", "-c", "set -o pipefail; "+installCmd(scriptBase64, user, version))
 	if err = exec.Stream(ctx, cmd, os.Stdout, os.Stderr); err != nil {
-		return fmt.Errorf("download and run install script: %w", err)
+		return fmt.Errorf("run install script: %w", err)
 	}
 	return nil
 }
