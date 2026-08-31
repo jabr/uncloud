@@ -12,6 +12,7 @@ import (
 	"github.com/psviderski/uncloud/internal/machine/api/pb"
 	"github.com/psviderski/uncloud/internal/ucind"
 	"github.com/psviderski/uncloud/pkg/client"
+	"github.com/psviderski/uncloud/pkg/distlock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
@@ -118,6 +119,60 @@ func TestClusterLifecycle(t *testing.T) {
 			assert.NotEmpty(t, m.ID)
 			assert.True(t, strings.HasPrefix(m.Name, "machine-"))
 		}
+	})
+
+	t.Run("distributed lock", func(t *testing.T) {
+		firstClient, err := c.Machines[0].Connect(ctx)
+		require.NoError(t, err)
+		t.Cleanup(func() {
+			require.NoError(t, firstClient.Close())
+		})
+
+		secondClient, err := c.Machines[1].Connect(ctx)
+		require.NoError(t, err)
+		t.Cleanup(func() {
+			require.NoError(t, secondClient.Close())
+		})
+
+		firstLocker, err := firstClient.NewLocker(distlock.Config{})
+		require.NoError(t, err)
+		secondLocker, err := secondClient.NewLocker(distlock.Config{})
+		require.NoError(t, err)
+
+		acquire := func(locker *distlock.Locker) (*distlock.Lease, error) {
+			acquireCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+			defer cancel()
+			return locker.Acquire(acquireCtx, "e2e-lock")
+		}
+		release := func(lease *distlock.Lease) {
+			t.Helper()
+			if lease.Context().Err() != nil {
+				return
+			}
+			releaseCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+			defer cancel()
+			require.NoError(t, lease.Release(releaseCtx))
+		}
+
+		firstLease, err := acquire(firstLocker)
+		require.NoError(t, err)
+		t.Cleanup(func() {
+			release(firstLease)
+		})
+
+		contendingCtx, cancelContending := context.WithTimeout(ctx, 500*time.Millisecond)
+		contendingLease, err := secondLocker.Acquire(contendingCtx, "e2e-lock")
+		cancelContending()
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+		require.Nil(t, contendingLease)
+
+		release(firstLease)
+
+		secondLease, err := acquire(secondLocker)
+		require.NoError(t, err)
+		t.Cleanup(func() {
+			release(secondLease)
+		})
 	})
 
 	t.Run("remove", func(t *testing.T) {
