@@ -9,6 +9,7 @@ import "google/protobuf/timestamp.proto";
 import "internal/machine/api/pb/common.proto";
 
 // CaddyStorage exposes the CertMagic storage operations backed by the distributed cluster store.
+// See Storage interface in https://github.com/caddyserver/certmagic/blob/master/storage.go.
 service CaddyStorage {
   rpc Store(StoreCaddyStorageRequest) returns (google.protobuf.Empty);
   rpc Load(LoadCaddyStorageRequest) returns (LoadCaddyStorageResponse);

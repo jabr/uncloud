@@ -32,6 +32,7 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 //
 // CaddyStorage exposes the CertMagic storage operations backed by the distributed cluster store.
+// See Storage interface in https://github.com/caddyserver/certmagic/blob/master/storage.go.
 type CaddyStorageClient interface {
 	Store(ctx context.Context, in *StoreCaddyStorageRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	Load(ctx context.Context, in *LoadCaddyStorageRequest, opts ...grpc.CallOption) (*LoadCaddyStorageResponse, error)
@@ -103,6 +104,7 @@ func (c *caddyStorageClient) Stat(ctx context.Context, in *StatCaddyStorageReque
 // for forward compatibility.
 //
 // CaddyStorage exposes the CertMagic storage operations backed by the distributed cluster store.
+// See Storage interface in https://github.com/caddyserver/certmagic/blob/master/storage.go.
 type CaddyStorageServer interface {
 	Store(context.Context, *StoreCaddyStorageRequest) (*emptypb.Empty, error)
 	Load(context.Context, *LoadCaddyStorageRequest) (*LoadCaddyStorageResponse, error)
