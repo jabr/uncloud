@@ -31,14 +31,19 @@ func New(corro *corrosion.APIClient) *Store {
 	return &Store{corro: corro}
 }
 
+// Get retrieves an unnamespaced legacy value.
+//
+// Deprecated: Existing callers may continue to use Get for legacy records. New
+// code should use [Store.Keyspace].
 func (s *Store) Get(ctx context.Context, key string, value any) error {
 	rows, err := s.corro.QueryContext(ctx, "SELECT value FROM cluster WHERE key = ?", key)
 	if err != nil {
 		return err
 	}
+	defer rows.Close()
 	if !rows.Next() {
-		if rows.Err() != nil {
-			return rows.Err()
+		if err = rows.Err(); err != nil {
+			return err
 		}
 		return ErrKeyNotFound
 	}
@@ -48,13 +53,21 @@ func (s *Store) Get(ctx context.Context, key string, value any) error {
 	return nil
 }
 
+// Put stores an unnamespaced legacy value.
+//
+// Deprecated: Existing callers may continue to use Put for legacy records. New
+// code should use [Store.Keyspace].
 func (s *Store) Put(ctx context.Context, key string, value any) error {
 	_, err := s.corro.ExecContext(ctx,
-		"INSERT OR REPLACE INTO cluster (key, value, updated_at) VALUES (?, ?, datetime('now'))",
+		"INSERT OR REPLACE INTO cluster (key, value, updated_at) VALUES (?, ?, datetime('now', 'subsec'))",
 		key, value)
 	return err
 }
 
+// Delete deletes an unnamespaced legacy value.
+//
+// Deprecated: Existing callers may continue to use Delete for legacy records.
+// New code should use [Store.Keyspace].
 func (s *Store) Delete(ctx context.Context, key string) error {
 	_, err := s.corro.ExecContext(ctx, "DELETE FROM cluster WHERE key = ?", key)
 	return err
