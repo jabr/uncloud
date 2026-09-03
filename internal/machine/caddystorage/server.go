@@ -1,5 +1,5 @@
 // Package caddystorage implements the machine-local Caddy storage API.
-// See internal/machine/api/pb/caddy_storage.proto for the gRPC service definition.
+// See api/pb/caddy_storage.proto for the gRPC service definition.
 package caddystorage
 
 import (
@@ -11,7 +11,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/psviderski/uncloud/internal/machine/api/pb"
+	"github.com/psviderski/uncloud/api/pb"
 	"github.com/psviderski/uncloud/internal/machine/store"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"

@@ -7,7 +7,7 @@ import (
 	"os"
 
 	"github.com/docker/cli/cli/streams"
-	"github.com/psviderski/uncloud/internal/machine/api/pb"
+	"github.com/psviderski/uncloud/api/pb"
 	"github.com/psviderski/uncloud/internal/machine/docker"
 	"github.com/psviderski/uncloud/pkg/api"
 	distlockgrpc "github.com/psviderski/uncloud/pkg/distlock/grpc"

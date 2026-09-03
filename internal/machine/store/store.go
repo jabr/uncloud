@@ -9,8 +9,8 @@ import (
 	"log/slog"
 
 	"github.com/google/uuid"
+	"github.com/psviderski/uncloud/api/pb"
 	"github.com/psviderski/uncloud/internal/corrosion"
-	"github.com/psviderski/uncloud/internal/machine/api/pb"
 	"google.golang.org/protobuf/encoding/protojson"
 )
 

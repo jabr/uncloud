@@ -2,12 +2,12 @@ syntax = "proto3";
 
 package api;
 
-option go_package = "github.com/psviderski/uncloud/internal/machine/api/pb";
+option go_package = "github.com/psviderski/uncloud/api/pb";
 
 import "google/protobuf/duration.proto";
 import "google/protobuf/empty.proto";
 import "google/protobuf/timestamp.proto";
-import "internal/machine/api/pb/common.proto";
+import "api/pb/common.proto";
 
 service Machine {
   // CheckPrerequisites verifies if the machine meets all necessary system requirements to participate in the cluster.
