@@ -345,19 +345,7 @@ configs:
 			warnContains: []string{"container_name"},
 		},
 		{
-			name: "deploy mode",
-			composeYAML: `services:
-  app:
-    image: myapp:latest
-    deploy:
-      mode: replicated-job
-      replicas: 2
-`,
-			warnCount:    1,
-			warnContains: []string{"deploy mode must"},
-		},
-		{
-			name: "deploy mode",
+			name: "deploy labels",
 			composeYAML: `services:
   app:
     image: myapp:latest

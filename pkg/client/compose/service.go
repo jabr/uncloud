@@ -502,7 +502,8 @@ func validateServicesFeatures(project *types.Project) []error {
 			errs = append(errs, err(service.Name, "container_name"))
 		}
 		if service.Deploy != nil {
-			if len(service.Deploy.Placement.Constraints) > 0 || len(service.Deploy.Placement.Preferences) > 0 {
+			if len(service.Deploy.Placement.Constraints) > 0 || len(service.Deploy.Placement.Preferences) > 0 ||
+				service.Deploy.Placement.MaxReplicas > 0 {
 				errs = append(errs, fmt.Errorf(
 					"service '%s': deploy placement is not supported, "+
 						"use x-machines instead: %s", service.Name,
@@ -512,10 +513,6 @@ func validateServicesFeatures(project *types.Project) []error {
 			if service.Deploy.RestartPolicy != nil {
 				errs = append(errs, fmt.Errorf(
 					"service '%s': deploy restart_policy defaults to 'unless-stopped'", service.Name))
-			}
-			if service.Deploy.Mode != "" && service.Deploy.Mode != "global" && service.Deploy.Mode != "replicated" {
-				errs = append(errs, fmt.Errorf(
-					"service '%s': deploy mode must either be 'global' or 'replicated'", service.Name))
 			}
 			if service.Deploy.RollbackConfig != nil {
 				errs = append(errs, err(service.Name, "deploy rollback_config"))
