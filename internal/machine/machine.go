@@ -29,6 +29,7 @@ import (
 	"github.com/psviderski/uncloud/internal/journal"
 	apiproxy "github.com/psviderski/uncloud/internal/machine/api/proxy"
 	"github.com/psviderski/uncloud/internal/machine/caddyconfig"
+	"github.com/psviderski/uncloud/internal/machine/caddystorage"
 	"github.com/psviderski/uncloud/internal/machine/cluster"
 	"github.com/psviderski/uncloud/internal/machine/constants"
 	"github.com/psviderski/uncloud/internal/machine/corromigrate"
@@ -307,8 +308,15 @@ func NewMachine(config *Config) (*Machine, error) {
 		WaitForNetworkReady: m.WaitForNetworkReady,
 	})
 	caddyServer := caddyconfig.NewServer(caddyconfig.NewService(config.CaddyConfigDir))
+
+	caddyStore, err := corroStore.Keyspace(caddystorage.Namespace)
+	if err != nil {
+		return nil, fmt.Errorf("create namespaced cluster store for Caddy storage: %w", err)
+	}
+	caddyStorageServer := caddystorage.NewServer(caddyStore)
+
 	leaseServer := distlockgrpc.NewServer(distlock.NewMemoryStore())
-	m.localMachineServer = newGRPCServer(m, c, m.dockerServer, caddyServer, leaseServer)
+	m.localMachineServer = newGRPCServer(m, c, m.dockerServer, caddyServer, caddyStorageServer, leaseServer)
 
 	if m.Initialised() {
 		close(m.initialised)
@@ -322,6 +330,7 @@ func newGRPCServer(
 	c pb.ClusterServer,
 	d pb.DockerServer,
 	caddy pb.CaddyServer,
+	caddyStorage pb.CaddyStorageServer,
 	lease distlockgrpc.LeaseServer,
 ) *grpc.Server {
 	s := grpc.NewServer()
@@ -329,6 +338,7 @@ func newGRPCServer(
 	pb.RegisterClusterServer(s, c)
 	pb.RegisterDockerServer(s, d)
 	pb.RegisterCaddyServer(s, caddy)
+	pb.RegisterCaddyStorageServer(s, caddyStorage)
 	distlockgrpc.RegisterLeaseServer(s, lease)
 	return s
 }

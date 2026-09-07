@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	dockerclient "github.com/docker/docker/client"
+	"github.com/google/uuid"
 	"github.com/psviderski/uncloud/api/pb"
 	"github.com/psviderski/uncloud/internal/ucind"
 	"github.com/psviderski/uncloud/pkg/client"
@@ -122,21 +124,21 @@ func TestClusterLifecycle(t *testing.T) {
 	})
 
 	t.Run("distributed lock", func(t *testing.T) {
-		firstClient, err := c.Machines[0].Connect(ctx)
+		cli0, err := c.Machines[0].Connect(ctx)
 		require.NoError(t, err)
 		t.Cleanup(func() {
-			require.NoError(t, firstClient.Close())
+			require.NoError(t, cli0.Close())
 		})
 
-		secondClient, err := c.Machines[1].Connect(ctx)
+		cli1, err := c.Machines[1].Connect(ctx)
 		require.NoError(t, err)
 		t.Cleanup(func() {
-			require.NoError(t, secondClient.Close())
+			require.NoError(t, cli1.Close())
 		})
 
-		firstLocker, err := firstClient.NewLocker(distlock.Config{})
+		firstLocker, err := cli0.NewLocker(distlock.Config{})
 		require.NoError(t, err)
-		secondLocker, err := secondClient.NewLocker(distlock.Config{})
+		secondLocker, err := cli1.NewLocker(distlock.Config{})
 		require.NoError(t, err)
 
 		acquire := func(locker *distlock.Locker) (*distlock.Lease, error) {
@@ -173,6 +175,178 @@ func TestClusterLifecycle(t *testing.T) {
 		t.Cleanup(func() {
 			release(secondLease)
 		})
+	})
+
+	t.Run("Caddy storage replication", func(t *testing.T) {
+		cli0, err := c.Machines[0].Connect(ctx)
+		require.NoError(t, err)
+		t.Cleanup(func() {
+			require.NoError(t, cli0.Close())
+		})
+
+		cli1, err := c.Machines[1].Connect(ctx)
+		require.NoError(t, err)
+		t.Cleanup(func() {
+			require.NoError(t, cli1.Close())
+		})
+
+		prefix := "e2e/caddy-storage/" + uuid.NewString()
+		key := prefix + "/key/path"
+
+		// Keep reused test clusters clean if an assertion stops the test before its explicit deletes.
+		t.Cleanup(func() {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			_, _ = cli1.CaddyStorage.Delete(client.ProxyMachinesContext(cleanupCtx, nil),
+				&pb.DeleteCaddyStorageRequest{Key: prefix})
+		})
+
+		// Verify both creation and overwrite, allowing each value to replicate before writing the next.
+		var updatedAt time.Time
+		for _, value := range [][]byte{[]byte("test-value"), []byte("replacement-value")} {
+			_, err = cli0.CaddyStorage.Store(ctx, &pb.StoreCaddyStorageRequest{Key: key, Value: value})
+			require.NoError(t, err)
+
+			// A Load through another machine must find the value on the machine that accepted the local write,
+			// regardless of whether Corrosion has replicated it to the other machines yet.
+			loadResp, err := cli1.CaddyStorage.Load(client.ProxySingleMachineContext(ctx, c.Machines[0].ID),
+				&pb.LoadCaddyStorageRequest{Key: key})
+			require.NoError(t, err)
+			require.Len(t, loadResp.Messages, 1)
+			originResult := loadResp.Messages[0]
+			require.Nil(t, originResult.Metadata,
+				"Proxy to a single machine should not inject metadata into the response")
+			require.Equal(t, value, originResult.Value)
+			require.NoError(t, originResult.UpdatedAt.CheckValid())
+			modified := originResult.UpdatedAt.AsTime()
+			require.False(t, modified.IsZero(), "Stored value should have a valid updated_at timestamp")
+			if !updatedAt.IsZero() {
+				require.True(t, modified.After(updatedAt), "Overwriting a value should advance updated_at")
+			}
+			updatedAt = modified
+
+			require.Eventually(t, func() bool {
+				callCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+				defer cancel()
+
+				resp, err := cli1.CaddyStorage.Load(client.ProxyMachinesContext(callCtx, nil),
+					&pb.LoadCaddyStorageRequest{Key: key})
+				if err != nil {
+					return false
+				}
+
+				require.Len(t, resp.Messages, 3)
+				for _, m := range resp.Messages {
+					require.NotNil(t, m.Metadata)
+					if m.Metadata.Error != "" || !bytes.Equal(m.Value,
+						value) || !m.UpdatedAt.AsTime().Equal(updatedAt) {
+						return false
+					}
+				}
+				return true
+			}, 30*time.Second, 100*time.Millisecond, "Caddy storage value %q should replicate to every machine", value)
+
+			// Every machine should report the same Caddy storage key information.
+			statResp, err := cli1.CaddyStorage.Stat(client.ProxyMachinesContext(ctx, nil),
+				&pb.StatCaddyStorageRequest{Key: key})
+			require.NoError(t, err)
+			require.Len(t, statResp.Messages, 3)
+			for _, m := range statResp.Messages {
+				require.NotNil(t, m.Metadata)
+				assert.Equal(t, "", m.Metadata.Error)
+				assert.Equal(t, key, m.Key)
+				assert.True(t, m.UpdatedAt.AsTime().Equal(updatedAt))
+				assert.EqualValues(t, len(value), m.Size)
+				assert.True(t, m.IsTerminal)
+			}
+		}
+
+		// A path with descendants should exist as a directory even though no value is stored at that key.
+		statResp, err := cli1.CaddyStorage.Stat(client.ProxyMachinesContext(ctx, nil),
+			&pb.StatCaddyStorageRequest{Key: prefix + "/key"})
+		require.NoError(t, err)
+		require.Len(t, statResp.Messages, 3)
+		for _, m := range statResp.Messages {
+			require.NotNil(t, m.Metadata)
+			assert.Equal(t, "", m.Metadata.Error)
+			assert.Equal(t, prefix+"/key", m.Key)
+			assert.Nil(t, m.UpdatedAt)
+			assert.EqualValues(t, 0, m.Size)
+			assert.False(t, m.IsTerminal)
+		}
+
+		listResp, err := cli1.CaddyStorage.List(client.ProxyMachinesContext(ctx, nil),
+			&pb.ListCaddyStorageRequest{Prefix: prefix, Recursive: true})
+		require.NoError(t, err)
+		require.Len(t, listResp.Messages, 3)
+		for _, m := range listResp.Messages {
+			require.NotNil(t, m.Metadata)
+			assert.Equal(t, "", m.Metadata.Error)
+			assert.Equal(t, []string{prefix + "/key", key}, m.Keys)
+		}
+
+		// A non-recursive list should only return the immediate child keys.
+		listResp, err = cli1.CaddyStorage.List(client.ProxyMachinesContext(ctx, nil),
+			&pb.ListCaddyStorageRequest{Prefix: prefix, Recursive: false})
+		require.NoError(t, err)
+		require.Len(t, listResp.Messages, 3)
+		for _, m := range listResp.Messages {
+			require.NotNil(t, m.Metadata)
+			assert.Equal(t, "", m.Metadata.Error)
+			assert.Equal(t, []string{prefix + "/key"}, m.Keys)
+		}
+
+		// Delete through one machine. The deletion must reach the other replicas through Corrosion.
+		_, err = cli1.CaddyStorage.Delete(ctx, &pb.DeleteCaddyStorageRequest{Key: prefix})
+		require.NoError(t, err)
+
+		require.Eventually(t, func() bool {
+			callCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			defer cancel()
+
+			resp, err := cli0.CaddyStorage.Load(client.ProxyMachinesContext(callCtx, nil),
+				&pb.LoadCaddyStorageRequest{Key: key})
+			if err != nil {
+				return false
+			}
+
+			require.Len(t, resp.Messages, 3)
+			for _, m := range resp.Messages {
+				require.NotNil(t, m.Metadata)
+				if codes.Code(m.Metadata.Status.GetCode()) != codes.NotFound {
+					return false
+				}
+			}
+			return true
+		}, 30*time.Second, 100*time.Millisecond, "Caddy storage deletion should replicate to every machine")
+
+		statResp, err = cli0.CaddyStorage.Stat(client.ProxyMachinesContext(ctx, nil),
+			&pb.StatCaddyStorageRequest{Key: key})
+		require.NoError(t, err)
+		require.Len(t, statResp.Messages, 3)
+		for _, m := range statResp.Messages {
+			require.NotNil(t, m.Metadata)
+			assert.Equal(t, codes.NotFound, codes.Code(m.Metadata.Status.GetCode()))
+		}
+
+		listResp, err = cli0.CaddyStorage.List(client.ProxyMachinesContext(ctx, nil),
+			&pb.ListCaddyStorageRequest{Prefix: prefix, Recursive: true})
+		require.NoError(t, err)
+		require.Len(t, listResp.Messages, 3)
+		for _, m := range listResp.Messages {
+			require.NotNil(t, m.Metadata)
+			assert.Equal(t, codes.NotFound, codes.Code(m.Metadata.Status.GetCode()))
+		}
+
+		// Delete is idempotent, so every machine should still return a successful response.
+		deleteResp, err := cli1.CaddyStorage.Delete(client.ProxyMachinesContext(ctx, nil),
+			&pb.DeleteCaddyStorageRequest{Key: prefix})
+		require.NoError(t, err)
+		require.Len(t, deleteResp.Messages, 3)
+		for _, m := range deleteResp.Messages {
+			require.NotNil(t, m.Metadata)
+			assert.Equal(t, "", m.Metadata.Error)
+		}
 	})
 
 	t.Run("remove", func(t *testing.T) {
