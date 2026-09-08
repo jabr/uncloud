@@ -1124,6 +1124,19 @@ func (m *Machine) InspectMachine(ctx context.Context, _ *emptypb.Empty) (*pb.Ins
 	}, nil
 }
 
+func (m *Machine) WaitForStoreVersion(ctx context.Context, req *pb.WaitForStoreVersionRequest) (*emptypb.Empty, error) {
+	if err := m.store.WaitForVersion(ctx, req.MinVersion); err != nil {
+		if ctx.Err() != nil {
+			return nil, status.FromContextError(ctx.Err()).Err()
+		}
+		if errors.Is(err, store.ErrInvalidStoreVersion) {
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		}
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	return &emptypb.Empty{}, nil
+}
+
 // UpdateMachine updates the configuration of this machine in its local state (the source of truth) and syncs
 // the result to the cluster store.
 func (m *Machine) UpdateMachine(ctx context.Context, req *pb.UpdateMachineRequest) (*pb.UpdateMachineResponse, error) {

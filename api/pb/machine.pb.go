@@ -570,8 +570,8 @@ type JoinClusterRequest struct {
 	// MTU of the WireGuard interface on this machine. The daemon auto-detects the optimal MTU if 0 or not set.
 	WireguardMtu int32 `protobuf:"varint,7,opt,name=wireguard_mtu,json=wireguardMtu,proto3" json:"wireguard_mtu,omitempty"`
 	// Cluster store version this machine must reach before participating.
-	// Per-actor vector (Corrosion actor UUID → max applied db_version).
-	MinStoreVersion map[string]int64 `protobuf:"bytes,6,rep,name=min_store_version,json=minStoreVersion,proto3" json:"min_store_version,omitempty" protobuf_key:"bytes,1,opt,name=key,proto3" protobuf_val:"varint,2,opt,name=value,proto3"`
+	// Per-actor vector (Corrosion actor UUID → minimum required db_version).
+	MinStoreVersion map[string]uint64 `protobuf:"bytes,6,rep,name=min_store_version,json=minStoreVersion,proto3" json:"min_store_version,omitempty" protobuf_key:"bytes,1,opt,name=key,proto3" protobuf_val:"varint,2,opt,name=value,proto3"`
 }
 
 func (x *JoinClusterRequest) Reset() {
@@ -634,7 +634,7 @@ func (x *JoinClusterRequest) GetWireguardMtu() int32 {
 	return 0
 }
 
-func (x *JoinClusterRequest) GetMinStoreVersion() map[string]int64 {
+func (x *JoinClusterRequest) GetMinStoreVersion() map[string]uint64 {
 	if x != nil {
 		return x.MinStoreVersion
 	}
@@ -698,9 +698,16 @@ type MachineDetails struct {
 	Machine  *MachineInfo `protobuf:"bytes,2,opt,name=machine,proto3" json:"machine,omitempty"`
 	// Round-trip times to other machines in the cluster, keyed by peer machine ID.
 	Rtts map[string]*RTTStats `protobuf:"bytes,4,rep,name=rtts,proto3" json:"rtts,omitempty" protobuf_key:"bytes,1,opt,name=key,proto3" protobuf_val:"bytes,2,opt,name=value,proto3"`
-	// Current cluster store version observed on this machine.
-	// Per-actor vector (Corrosion actor UUID → max applied db_version) read from Corrosion crsql_db_versions.
-	StoreVersion map[string]int64 `protobuf:"bytes,5,rep,name=store_version,json=storeVersion,proto3" json:"store_version,omitempty" protobuf_key:"bytes,1,opt,name=key,proto3" protobuf_val:"varint,2,opt,name=value,proto3"`
+	// Store replication progress observed on this machine.
+	// Maps each Corrosion actor UUID to its highest processed database version. Corrosion also counts versions whose
+	// changes were superseded and skipped. Versions at or below a reported version may still be missing or pending
+	// locally.
+	//
+	// Pass this vector to WaitForStoreVersion on another machine to wait for replication through these versions.
+	// See that RPC's data-availability limitations. To combine observations from several machines, take the maximum
+	// for each actor.
+	// Capturing this vector does not wait for replication or prevent further writes.
+	StoreVersion map[string]uint64 `protobuf:"bytes,5,rep,name=store_version,json=storeVersion,proto3" json:"store_version,omitempty" protobuf_key:"bytes,1,opt,name=key,proto3" protobuf_val:"varint,2,opt,name=value,proto3"`
 }
 
 func (x *MachineDetails) Reset() {
@@ -756,9 +763,60 @@ func (x *MachineDetails) GetRtts() map[string]*RTTStats {
 	return nil
 }
 
-func (x *MachineDetails) GetStoreVersion() map[string]int64 {
+func (x *MachineDetails) GetStoreVersion() map[string]uint64 {
 	if x != nil {
 		return x.StoreVersion
+	}
+	return nil
+}
+
+type WaitForStoreVersionRequest struct {
+	state         protoimpl.MessageState
+	sizeCache     protoimpl.SizeCache
+	unknownFields protoimpl.UnknownFields
+
+	// Minimum database version to reach for each Corrosion actor UUID.
+	// Obtain a vector from InspectMachine. To combine several responses, take the maximum version for each actor.
+	// Actors omitted from this vector and versions above its targets are not awaited. An empty vector requires
+	// no replication. Unknown actors with positive targets remain pending until replication reaches them or the RPC ends.
+	MinVersion map[string]uint64 `protobuf:"bytes,1,rep,name=min_version,json=minVersion,proto3" json:"min_version,omitempty" protobuf_key:"bytes,1,opt,name=key,proto3" protobuf_val:"varint,2,opt,name=value,proto3"`
+}
+
+func (x *WaitForStoreVersionRequest) Reset() {
+	*x = WaitForStoreVersionRequest{}
+	if protoimpl.UnsafeEnabled {
+		mi := &file_api_pb_machine_proto_msgTypes[10]
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		ms.StoreMessageInfo(mi)
+	}
+}
+
+func (x *WaitForStoreVersionRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WaitForStoreVersionRequest) ProtoMessage() {}
+
+func (x *WaitForStoreVersionRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_api_pb_machine_proto_msgTypes[10]
+	if protoimpl.UnsafeEnabled && x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WaitForStoreVersionRequest.ProtoReflect.Descriptor instead.
+func (*WaitForStoreVersionRequest) Descriptor() ([]byte, []int) {
+	return file_api_pb_machine_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *WaitForStoreVersionRequest) GetMinVersion() map[string]uint64 {
+	if x != nil {
+		return x.MinVersion
 	}
 	return nil
 }
@@ -774,7 +832,7 @@ type TokenResponse struct {
 func (x *TokenResponse) Reset() {
 	*x = TokenResponse{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_api_pb_machine_proto_msgTypes[10]
+		mi := &file_api_pb_machine_proto_msgTypes[11]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -787,7 +845,7 @@ func (x *TokenResponse) String() string {
 func (*TokenResponse) ProtoMessage() {}
 
 func (x *TokenResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_pb_machine_proto_msgTypes[10]
+	mi := &file_api_pb_machine_proto_msgTypes[11]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -800,7 +858,7 @@ func (x *TokenResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TokenResponse.ProtoReflect.Descriptor instead.
 func (*TokenResponse) Descriptor() ([]byte, []int) {
-	return file_api_pb_machine_proto_rawDescGZIP(), []int{10}
+	return file_api_pb_machine_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *TokenResponse) GetToken() string {
@@ -819,7 +877,7 @@ type ResetRequest struct {
 func (x *ResetRequest) Reset() {
 	*x = ResetRequest{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_api_pb_machine_proto_msgTypes[11]
+		mi := &file_api_pb_machine_proto_msgTypes[12]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -832,7 +890,7 @@ func (x *ResetRequest) String() string {
 func (*ResetRequest) ProtoMessage() {}
 
 func (x *ResetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_pb_machine_proto_msgTypes[11]
+	mi := &file_api_pb_machine_proto_msgTypes[12]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -845,7 +903,7 @@ func (x *ResetRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResetRequest.ProtoReflect.Descriptor instead.
 func (*ResetRequest) Descriptor() ([]byte, []int) {
-	return file_api_pb_machine_proto_rawDescGZIP(), []int{11}
+	return file_api_pb_machine_proto_rawDescGZIP(), []int{12}
 }
 
 type Service struct {
@@ -862,7 +920,7 @@ type Service struct {
 func (x *Service) Reset() {
 	*x = Service{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_api_pb_machine_proto_msgTypes[12]
+		mi := &file_api_pb_machine_proto_msgTypes[13]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -875,7 +933,7 @@ func (x *Service) String() string {
 func (*Service) ProtoMessage() {}
 
 func (x *Service) ProtoReflect() protoreflect.Message {
-	mi := &file_api_pb_machine_proto_msgTypes[12]
+	mi := &file_api_pb_machine_proto_msgTypes[13]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -888,7 +946,7 @@ func (x *Service) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Service.ProtoReflect.Descriptor instead.
 func (*Service) Descriptor() ([]byte, []int) {
-	return file_api_pb_machine_proto_rawDescGZIP(), []int{12}
+	return file_api_pb_machine_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *Service) GetId() string {
@@ -930,7 +988,7 @@ type InspectServiceRequest struct {
 func (x *InspectServiceRequest) Reset() {
 	*x = InspectServiceRequest{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_api_pb_machine_proto_msgTypes[13]
+		mi := &file_api_pb_machine_proto_msgTypes[14]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -943,7 +1001,7 @@ func (x *InspectServiceRequest) String() string {
 func (*InspectServiceRequest) ProtoMessage() {}
 
 func (x *InspectServiceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_pb_machine_proto_msgTypes[13]
+	mi := &file_api_pb_machine_proto_msgTypes[14]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -956,7 +1014,7 @@ func (x *InspectServiceRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InspectServiceRequest.ProtoReflect.Descriptor instead.
 func (*InspectServiceRequest) Descriptor() ([]byte, []int) {
-	return file_api_pb_machine_proto_rawDescGZIP(), []int{13}
+	return file_api_pb_machine_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *InspectServiceRequest) GetId() string {
@@ -977,7 +1035,7 @@ type InspectServiceResponse struct {
 func (x *InspectServiceResponse) Reset() {
 	*x = InspectServiceResponse{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_api_pb_machine_proto_msgTypes[14]
+		mi := &file_api_pb_machine_proto_msgTypes[15]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -990,7 +1048,7 @@ func (x *InspectServiceResponse) String() string {
 func (*InspectServiceResponse) ProtoMessage() {}
 
 func (x *InspectServiceResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_pb_machine_proto_msgTypes[14]
+	mi := &file_api_pb_machine_proto_msgTypes[15]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1003,7 +1061,7 @@ func (x *InspectServiceResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InspectServiceResponse.ProtoReflect.Descriptor instead.
 func (*InspectServiceResponse) Descriptor() ([]byte, []int) {
-	return file_api_pb_machine_proto_rawDescGZIP(), []int{14}
+	return file_api_pb_machine_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *InspectServiceResponse) GetService() *Service {
@@ -1027,7 +1085,7 @@ type InspectWireGuardNetworkResponse struct {
 func (x *InspectWireGuardNetworkResponse) Reset() {
 	*x = InspectWireGuardNetworkResponse{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_api_pb_machine_proto_msgTypes[15]
+		mi := &file_api_pb_machine_proto_msgTypes[16]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -1040,7 +1098,7 @@ func (x *InspectWireGuardNetworkResponse) String() string {
 func (*InspectWireGuardNetworkResponse) ProtoMessage() {}
 
 func (x *InspectWireGuardNetworkResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_pb_machine_proto_msgTypes[15]
+	mi := &file_api_pb_machine_proto_msgTypes[16]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1053,7 +1111,7 @@ func (x *InspectWireGuardNetworkResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InspectWireGuardNetworkResponse.ProtoReflect.Descriptor instead.
 func (*InspectWireGuardNetworkResponse) Descriptor() ([]byte, []int) {
-	return file_api_pb_machine_proto_rawDescGZIP(), []int{15}
+	return file_api_pb_machine_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *InspectWireGuardNetworkResponse) GetInterfaceName() string {
@@ -1100,7 +1158,7 @@ type WireGuardPeer struct {
 func (x *WireGuardPeer) Reset() {
 	*x = WireGuardPeer{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_api_pb_machine_proto_msgTypes[16]
+		mi := &file_api_pb_machine_proto_msgTypes[17]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -1113,7 +1171,7 @@ func (x *WireGuardPeer) String() string {
 func (*WireGuardPeer) ProtoMessage() {}
 
 func (x *WireGuardPeer) ProtoReflect() protoreflect.Message {
-	mi := &file_api_pb_machine_proto_msgTypes[16]
+	mi := &file_api_pb_machine_proto_msgTypes[17]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1126,7 +1184,7 @@ func (x *WireGuardPeer) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WireGuardPeer.ProtoReflect.Descriptor instead.
 func (*WireGuardPeer) Descriptor() ([]byte, []int) {
-	return file_api_pb_machine_proto_rawDescGZIP(), []int{16}
+	return file_api_pb_machine_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *WireGuardPeer) GetPublicKey() []byte {
@@ -1183,7 +1241,7 @@ type RTTStats struct {
 func (x *RTTStats) Reset() {
 	*x = RTTStats{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_api_pb_machine_proto_msgTypes[17]
+		mi := &file_api_pb_machine_proto_msgTypes[18]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -1196,7 +1254,7 @@ func (x *RTTStats) String() string {
 func (*RTTStats) ProtoMessage() {}
 
 func (x *RTTStats) ProtoReflect() protoreflect.Message {
-	mi := &file_api_pb_machine_proto_msgTypes[17]
+	mi := &file_api_pb_machine_proto_msgTypes[18]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1209,7 +1267,7 @@ func (x *RTTStats) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RTTStats.ProtoReflect.Descriptor instead.
 func (*RTTStats) Descriptor() ([]byte, []int) {
-	return file_api_pb_machine_proto_rawDescGZIP(), []int{17}
+	return file_api_pb_machine_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *RTTStats) GetMedian() *durationpb.Duration {
@@ -1239,7 +1297,7 @@ type Service_Container struct {
 func (x *Service_Container) Reset() {
 	*x = Service_Container{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_api_pb_machine_proto_msgTypes[21]
+		mi := &file_api_pb_machine_proto_msgTypes[23]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -1252,7 +1310,7 @@ func (x *Service_Container) String() string {
 func (*Service_Container) ProtoMessage() {}
 
 func (x *Service_Container) ProtoReflect() protoreflect.Message {
-	mi := &file_api_pb_machine_proto_msgTypes[21]
+	mi := &file_api_pb_machine_proto_msgTypes[23]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1265,7 +1323,7 @@ func (x *Service_Container) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Service_Container.ProtoReflect.Descriptor instead.
 func (*Service_Container) Descriptor() ([]byte, []int) {
-	return file_api_pb_machine_proto_rawDescGZIP(), []int{12, 0}
+	return file_api_pb_machine_proto_rawDescGZIP(), []int{13, 0}
 }
 
 func (x *Service_Container) GetMachineId() string {
@@ -1392,7 +1450,7 @@ var file_api_pb_machine_proto_rawDesc = []byte{
 	0x14, 0x4d, 0x69, 0x6e, 0x53, 0x74, 0x6f, 0x72, 0x65, 0x56, 0x65, 0x72, 0x73, 0x69, 0x6f, 0x6e,
 	0x45, 0x6e, 0x74, 0x72, 0x79, 0x12, 0x10, 0x0a, 0x03, 0x6b, 0x65, 0x79, 0x18, 0x01, 0x20, 0x01,
 	0x28, 0x09, 0x52, 0x03, 0x6b, 0x65, 0x79, 0x12, 0x14, 0x0a, 0x05, 0x76, 0x61, 0x6c, 0x75, 0x65,
-	0x18, 0x02, 0x20, 0x01, 0x28, 0x03, 0x52, 0x05, 0x76, 0x61, 0x6c, 0x75, 0x65, 0x3a, 0x02, 0x38,
+	0x18, 0x02, 0x20, 0x01, 0x28, 0x04, 0x52, 0x05, 0x76, 0x61, 0x6c, 0x75, 0x65, 0x3a, 0x02, 0x38,
 	0x01, 0x22, 0x49, 0x0a, 0x16, 0x49, 0x6e, 0x73, 0x70, 0x65, 0x63, 0x74, 0x4d, 0x61, 0x63, 0x68,
 	0x69, 0x6e, 0x65, 0x52, 0x65, 0x73, 0x70, 0x6f, 0x6e, 0x73, 0x65, 0x12, 0x2f, 0x0a, 0x08, 0x6d,
 	0x61, 0x63, 0x68, 0x69, 0x6e, 0x65, 0x73, 0x18, 0x01, 0x20, 0x03, 0x28, 0x0b, 0x32, 0x13, 0x2e,
@@ -1420,7 +1478,18 @@ var file_api_pb_machine_proto_rawDesc = []byte{
 	0x11, 0x53, 0x74, 0x6f, 0x72, 0x65, 0x56, 0x65, 0x72, 0x73, 0x69, 0x6f, 0x6e, 0x45, 0x6e, 0x74,
 	0x72, 0x79, 0x12, 0x10, 0x0a, 0x03, 0x6b, 0x65, 0x79, 0x18, 0x01, 0x20, 0x01, 0x28, 0x09, 0x52,
 	0x03, 0x6b, 0x65, 0x79, 0x12, 0x14, 0x0a, 0x05, 0x76, 0x61, 0x6c, 0x75, 0x65, 0x18, 0x02, 0x20,
-	0x01, 0x28, 0x03, 0x52, 0x05, 0x76, 0x61, 0x6c, 0x75, 0x65, 0x3a, 0x02, 0x38, 0x01, 0x22, 0x25,
+	0x01, 0x28, 0x04, 0x52, 0x05, 0x76, 0x61, 0x6c, 0x75, 0x65, 0x3a, 0x02, 0x38, 0x01, 0x22, 0xad,
+	0x01, 0x0a, 0x1a, 0x57, 0x61, 0x69, 0x74, 0x46, 0x6f, 0x72, 0x53, 0x74, 0x6f, 0x72, 0x65, 0x56,
+	0x65, 0x72, 0x73, 0x69, 0x6f, 0x6e, 0x52, 0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x12, 0x50, 0x0a,
+	0x0b, 0x6d, 0x69, 0x6e, 0x5f, 0x76, 0x65, 0x72, 0x73, 0x69, 0x6f, 0x6e, 0x18, 0x01, 0x20, 0x03,
+	0x28, 0x0b, 0x32, 0x2f, 0x2e, 0x61, 0x70, 0x69, 0x2e, 0x57, 0x61, 0x69, 0x74, 0x46, 0x6f, 0x72,
+	0x53, 0x74, 0x6f, 0x72, 0x65, 0x56, 0x65, 0x72, 0x73, 0x69, 0x6f, 0x6e, 0x52, 0x65, 0x71, 0x75,
+	0x65, 0x73, 0x74, 0x2e, 0x4d, 0x69, 0x6e, 0x56, 0x65, 0x72, 0x73, 0x69, 0x6f, 0x6e, 0x45, 0x6e,
+	0x74, 0x72, 0x79, 0x52, 0x0a, 0x6d, 0x69, 0x6e, 0x56, 0x65, 0x72, 0x73, 0x69, 0x6f, 0x6e, 0x1a,
+	0x3d, 0x0a, 0x0f, 0x4d, 0x69, 0x6e, 0x56, 0x65, 0x72, 0x73, 0x69, 0x6f, 0x6e, 0x45, 0x6e, 0x74,
+	0x72, 0x79, 0x12, 0x10, 0x0a, 0x03, 0x6b, 0x65, 0x79, 0x18, 0x01, 0x20, 0x01, 0x28, 0x09, 0x52,
+	0x03, 0x6b, 0x65, 0x79, 0x12, 0x14, 0x0a, 0x05, 0x76, 0x61, 0x6c, 0x75, 0x65, 0x18, 0x02, 0x20,
+	0x01, 0x28, 0x04, 0x52, 0x05, 0x76, 0x61, 0x6c, 0x75, 0x65, 0x3a, 0x02, 0x38, 0x01, 0x22, 0x25,
 	0x0a, 0x0d, 0x54, 0x6f, 0x6b, 0x65, 0x6e, 0x52, 0x65, 0x73, 0x70, 0x6f, 0x6e, 0x73, 0x65, 0x12,
 	0x14, 0x0a, 0x05, 0x74, 0x6f, 0x6b, 0x65, 0x6e, 0x18, 0x01, 0x20, 0x01, 0x28, 0x09, 0x52, 0x05,
 	0x74, 0x6f, 0x6b, 0x65, 0x6e, 0x22, 0x0e, 0x0a, 0x0c, 0x52, 0x65, 0x73, 0x65, 0x74, 0x52, 0x65,
@@ -1478,7 +1547,7 @@ var file_api_pb_machine_proto_rawDesc = []byte{
 	0x12, 0x32, 0x0a, 0x07, 0x73, 0x74, 0x64, 0x5f, 0x64, 0x65, 0x76, 0x18, 0x02, 0x20, 0x01, 0x28,
 	0x0b, 0x32, 0x19, 0x2e, 0x67, 0x6f, 0x6f, 0x67, 0x6c, 0x65, 0x2e, 0x70, 0x72, 0x6f, 0x74, 0x6f,
 	0x62, 0x75, 0x66, 0x2e, 0x44, 0x75, 0x72, 0x61, 0x74, 0x69, 0x6f, 0x6e, 0x52, 0x06, 0x73, 0x74,
-	0x64, 0x44, 0x65, 0x76, 0x32, 0xdd, 0x05, 0x0a, 0x07, 0x4d, 0x61, 0x63, 0x68, 0x69, 0x6e, 0x65,
+	0x64, 0x44, 0x65, 0x76, 0x32, 0xad, 0x06, 0x0a, 0x07, 0x4d, 0x61, 0x63, 0x68, 0x69, 0x6e, 0x65,
 	0x12, 0x4d, 0x0a, 0x12, 0x43, 0x68, 0x65, 0x63, 0x6b, 0x50, 0x72, 0x65, 0x72, 0x65, 0x71, 0x75,
 	0x69, 0x73, 0x69, 0x74, 0x65, 0x73, 0x12, 0x16, 0x2e, 0x67, 0x6f, 0x6f, 0x67, 0x6c, 0x65, 0x2e,
 	0x70, 0x72, 0x6f, 0x74, 0x6f, 0x62, 0x75, 0x66, 0x2e, 0x45, 0x6d, 0x70, 0x74, 0x79, 0x1a, 0x1f,
@@ -1503,7 +1572,12 @@ var file_api_pb_machine_proto_rawDesc = []byte{
 	0x67, 0x6f, 0x6f, 0x67, 0x6c, 0x65, 0x2e, 0x70, 0x72, 0x6f, 0x74, 0x6f, 0x62, 0x75, 0x66, 0x2e,
 	0x45, 0x6d, 0x70, 0x74, 0x79, 0x1a, 0x1b, 0x2e, 0x61, 0x70, 0x69, 0x2e, 0x49, 0x6e, 0x73, 0x70,
 	0x65, 0x63, 0x74, 0x4d, 0x61, 0x63, 0x68, 0x69, 0x6e, 0x65, 0x52, 0x65, 0x73, 0x70, 0x6f, 0x6e,
-	0x73, 0x65, 0x12, 0x46, 0x0a, 0x0d, 0x55, 0x70, 0x64, 0x61, 0x74, 0x65, 0x4d, 0x61, 0x63, 0x68,
+	0x73, 0x65, 0x12, 0x4e, 0x0a, 0x13, 0x57, 0x61, 0x69, 0x74, 0x46, 0x6f, 0x72, 0x53, 0x74, 0x6f,
+	0x72, 0x65, 0x56, 0x65, 0x72, 0x73, 0x69, 0x6f, 0x6e, 0x12, 0x1f, 0x2e, 0x61, 0x70, 0x69, 0x2e,
+	0x57, 0x61, 0x69, 0x74, 0x46, 0x6f, 0x72, 0x53, 0x74, 0x6f, 0x72, 0x65, 0x56, 0x65, 0x72, 0x73,
+	0x69, 0x6f, 0x6e, 0x52, 0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x1a, 0x16, 0x2e, 0x67, 0x6f, 0x6f,
+	0x67, 0x6c, 0x65, 0x2e, 0x70, 0x72, 0x6f, 0x74, 0x6f, 0x62, 0x75, 0x66, 0x2e, 0x45, 0x6d, 0x70,
+	0x74, 0x79, 0x12, 0x46, 0x0a, 0x0d, 0x55, 0x70, 0x64, 0x61, 0x74, 0x65, 0x4d, 0x61, 0x63, 0x68,
 	0x69, 0x6e, 0x65, 0x12, 0x19, 0x2e, 0x61, 0x70, 0x69, 0x2e, 0x55, 0x70, 0x64, 0x61, 0x74, 0x65,
 	0x4d, 0x61, 0x63, 0x68, 0x69, 0x6e, 0x65, 0x52, 0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x1a, 0x1a,
 	0x2e, 0x61, 0x70, 0x69, 0x2e, 0x55, 0x70, 0x64, 0x61, 0x74, 0x65, 0x4d, 0x61, 0x63, 0x68, 0x69,
@@ -1542,7 +1616,7 @@ func file_api_pb_machine_proto_rawDescGZIP() []byte {
 	return file_api_pb_machine_proto_rawDescData
 }
 
-var file_api_pb_machine_proto_msgTypes = make([]protoimpl.MessageInfo, 22)
+var file_api_pb_machine_proto_msgTypes = make([]protoimpl.MessageInfo, 24)
 var file_api_pb_machine_proto_goTypes = []any{
 	(*MachineInfo)(nil),                     // 0: api.MachineInfo
 	(*NetworkConfig)(nil),                   // 1: api.NetworkConfig
@@ -1554,83 +1628,88 @@ var file_api_pb_machine_proto_goTypes = []any{
 	(*JoinClusterRequest)(nil),              // 7: api.JoinClusterRequest
 	(*InspectMachineResponse)(nil),          // 8: api.InspectMachineResponse
 	(*MachineDetails)(nil),                  // 9: api.MachineDetails
-	(*TokenResponse)(nil),                   // 10: api.TokenResponse
-	(*ResetRequest)(nil),                    // 11: api.ResetRequest
-	(*Service)(nil),                         // 12: api.Service
-	(*InspectServiceRequest)(nil),           // 13: api.InspectServiceRequest
-	(*InspectServiceResponse)(nil),          // 14: api.InspectServiceResponse
-	(*InspectWireGuardNetworkResponse)(nil), // 15: api.InspectWireGuardNetworkResponse
-	(*WireGuardPeer)(nil),                   // 16: api.WireGuardPeer
-	(*RTTStats)(nil),                        // 17: api.RTTStats
-	nil,                                     // 18: api.JoinClusterRequest.MinStoreVersionEntry
-	nil,                                     // 19: api.MachineDetails.RttsEntry
-	nil,                                     // 20: api.MachineDetails.StoreVersionEntry
-	(*Service_Container)(nil),               // 21: api.Service.Container
-	(*IP)(nil),                              // 22: api.IP
-	(*IPPrefix)(nil),                        // 23: api.IPPrefix
-	(*IPPort)(nil),                          // 24: api.IPPort
-	(*Metadata)(nil),                        // 25: api.Metadata
-	(*timestamppb.Timestamp)(nil),           // 26: google.protobuf.Timestamp
-	(*durationpb.Duration)(nil),             // 27: google.protobuf.Duration
-	(*emptypb.Empty)(nil),                   // 28: google.protobuf.Empty
-	(*LogsRequest)(nil),                     // 29: api.LogsRequest
-	(*LogEntry)(nil),                        // 30: api.LogEntry
+	(*WaitForStoreVersionRequest)(nil),      // 10: api.WaitForStoreVersionRequest
+	(*TokenResponse)(nil),                   // 11: api.TokenResponse
+	(*ResetRequest)(nil),                    // 12: api.ResetRequest
+	(*Service)(nil),                         // 13: api.Service
+	(*InspectServiceRequest)(nil),           // 14: api.InspectServiceRequest
+	(*InspectServiceResponse)(nil),          // 15: api.InspectServiceResponse
+	(*InspectWireGuardNetworkResponse)(nil), // 16: api.InspectWireGuardNetworkResponse
+	(*WireGuardPeer)(nil),                   // 17: api.WireGuardPeer
+	(*RTTStats)(nil),                        // 18: api.RTTStats
+	nil,                                     // 19: api.JoinClusterRequest.MinStoreVersionEntry
+	nil,                                     // 20: api.MachineDetails.RttsEntry
+	nil,                                     // 21: api.MachineDetails.StoreVersionEntry
+	nil,                                     // 22: api.WaitForStoreVersionRequest.MinVersionEntry
+	(*Service_Container)(nil),               // 23: api.Service.Container
+	(*IP)(nil),                              // 24: api.IP
+	(*IPPrefix)(nil),                        // 25: api.IPPrefix
+	(*IPPort)(nil),                          // 26: api.IPPort
+	(*Metadata)(nil),                        // 27: api.Metadata
+	(*timestamppb.Timestamp)(nil),           // 28: google.protobuf.Timestamp
+	(*durationpb.Duration)(nil),             // 29: google.protobuf.Duration
+	(*emptypb.Empty)(nil),                   // 30: google.protobuf.Empty
+	(*LogsRequest)(nil),                     // 31: api.LogsRequest
+	(*LogEntry)(nil),                        // 32: api.LogEntry
 }
 var file_api_pb_machine_proto_depIdxs = []int32{
 	1,  // 0: api.MachineInfo.network:type_name -> api.NetworkConfig
-	22, // 1: api.MachineInfo.public_ip:type_name -> api.IP
-	23, // 2: api.NetworkConfig.subnet:type_name -> api.IPPrefix
-	22, // 3: api.NetworkConfig.management_ip:type_name -> api.IP
-	24, // 4: api.NetworkConfig.endpoints:type_name -> api.IPPort
-	22, // 5: api.UpdateMachineRequest.public_ip:type_name -> api.IP
-	24, // 6: api.UpdateMachineRequest.endpoints:type_name -> api.IPPort
+	24, // 1: api.MachineInfo.public_ip:type_name -> api.IP
+	25, // 2: api.NetworkConfig.subnet:type_name -> api.IPPrefix
+	24, // 3: api.NetworkConfig.management_ip:type_name -> api.IP
+	26, // 4: api.NetworkConfig.endpoints:type_name -> api.IPPort
+	24, // 5: api.UpdateMachineRequest.public_ip:type_name -> api.IP
+	26, // 6: api.UpdateMachineRequest.endpoints:type_name -> api.IPPort
 	0,  // 7: api.UpdateMachineResponse.machine:type_name -> api.MachineInfo
-	23, // 8: api.InitClusterRequest.network:type_name -> api.IPPrefix
-	22, // 9: api.InitClusterRequest.public_ip:type_name -> api.IP
-	24, // 10: api.InitClusterRequest.wireguard_endpoints:type_name -> api.IPPort
+	25, // 8: api.InitClusterRequest.network:type_name -> api.IPPrefix
+	24, // 9: api.InitClusterRequest.public_ip:type_name -> api.IP
+	26, // 10: api.InitClusterRequest.wireguard_endpoints:type_name -> api.IPPort
 	0,  // 11: api.InitClusterResponse.machine:type_name -> api.MachineInfo
 	0,  // 12: api.JoinClusterRequest.machine:type_name -> api.MachineInfo
 	0,  // 13: api.JoinClusterRequest.other_machines:type_name -> api.MachineInfo
-	18, // 14: api.JoinClusterRequest.min_store_version:type_name -> api.JoinClusterRequest.MinStoreVersionEntry
+	19, // 14: api.JoinClusterRequest.min_store_version:type_name -> api.JoinClusterRequest.MinStoreVersionEntry
 	9,  // 15: api.InspectMachineResponse.machines:type_name -> api.MachineDetails
-	25, // 16: api.MachineDetails.metadata:type_name -> api.Metadata
+	27, // 16: api.MachineDetails.metadata:type_name -> api.Metadata
 	0,  // 17: api.MachineDetails.machine:type_name -> api.MachineInfo
-	19, // 18: api.MachineDetails.rtts:type_name -> api.MachineDetails.RttsEntry
-	20, // 19: api.MachineDetails.store_version:type_name -> api.MachineDetails.StoreVersionEntry
-	21, // 20: api.Service.containers:type_name -> api.Service.Container
-	12, // 21: api.InspectServiceResponse.service:type_name -> api.Service
-	16, // 22: api.InspectWireGuardNetworkResponse.peers:type_name -> api.WireGuardPeer
-	26, // 23: api.WireGuardPeer.last_handshake_time:type_name -> google.protobuf.Timestamp
-	27, // 24: api.RTTStats.median:type_name -> google.protobuf.Duration
-	27, // 25: api.RTTStats.std_dev:type_name -> google.protobuf.Duration
-	17, // 26: api.MachineDetails.RttsEntry.value:type_name -> api.RTTStats
-	28, // 27: api.Machine.CheckPrerequisites:input_type -> google.protobuf.Empty
-	5,  // 28: api.Machine.InitCluster:input_type -> api.InitClusterRequest
-	7,  // 29: api.Machine.JoinCluster:input_type -> api.JoinClusterRequest
-	28, // 30: api.Machine.Token:input_type -> google.protobuf.Empty
-	28, // 31: api.Machine.Inspect:input_type -> google.protobuf.Empty
-	28, // 32: api.Machine.InspectMachine:input_type -> google.protobuf.Empty
-	2,  // 33: api.Machine.UpdateMachine:input_type -> api.UpdateMachineRequest
-	28, // 34: api.Machine.InspectWireGuardNetwork:input_type -> google.protobuf.Empty
-	11, // 35: api.Machine.Reset:input_type -> api.ResetRequest
-	13, // 36: api.Machine.InspectService:input_type -> api.InspectServiceRequest
-	29, // 37: api.Machine.MachineLogs:input_type -> api.LogsRequest
-	4,  // 38: api.Machine.CheckPrerequisites:output_type -> api.CheckPrerequisitesResponse
-	6,  // 39: api.Machine.InitCluster:output_type -> api.InitClusterResponse
-	28, // 40: api.Machine.JoinCluster:output_type -> google.protobuf.Empty
-	10, // 41: api.Machine.Token:output_type -> api.TokenResponse
-	0,  // 42: api.Machine.Inspect:output_type -> api.MachineInfo
-	8,  // 43: api.Machine.InspectMachine:output_type -> api.InspectMachineResponse
-	3,  // 44: api.Machine.UpdateMachine:output_type -> api.UpdateMachineResponse
-	15, // 45: api.Machine.InspectWireGuardNetwork:output_type -> api.InspectWireGuardNetworkResponse
-	28, // 46: api.Machine.Reset:output_type -> google.protobuf.Empty
-	14, // 47: api.Machine.InspectService:output_type -> api.InspectServiceResponse
-	30, // 48: api.Machine.MachineLogs:output_type -> api.LogEntry
-	38, // [38:49] is the sub-list for method output_type
-	27, // [27:38] is the sub-list for method input_type
-	27, // [27:27] is the sub-list for extension type_name
-	27, // [27:27] is the sub-list for extension extendee
-	0,  // [0:27] is the sub-list for field type_name
+	20, // 18: api.MachineDetails.rtts:type_name -> api.MachineDetails.RttsEntry
+	21, // 19: api.MachineDetails.store_version:type_name -> api.MachineDetails.StoreVersionEntry
+	22, // 20: api.WaitForStoreVersionRequest.min_version:type_name -> api.WaitForStoreVersionRequest.MinVersionEntry
+	23, // 21: api.Service.containers:type_name -> api.Service.Container
+	13, // 22: api.InspectServiceResponse.service:type_name -> api.Service
+	17, // 23: api.InspectWireGuardNetworkResponse.peers:type_name -> api.WireGuardPeer
+	28, // 24: api.WireGuardPeer.last_handshake_time:type_name -> google.protobuf.Timestamp
+	29, // 25: api.RTTStats.median:type_name -> google.protobuf.Duration
+	29, // 26: api.RTTStats.std_dev:type_name -> google.protobuf.Duration
+	18, // 27: api.MachineDetails.RttsEntry.value:type_name -> api.RTTStats
+	30, // 28: api.Machine.CheckPrerequisites:input_type -> google.protobuf.Empty
+	5,  // 29: api.Machine.InitCluster:input_type -> api.InitClusterRequest
+	7,  // 30: api.Machine.JoinCluster:input_type -> api.JoinClusterRequest
+	30, // 31: api.Machine.Token:input_type -> google.protobuf.Empty
+	30, // 32: api.Machine.Inspect:input_type -> google.protobuf.Empty
+	30, // 33: api.Machine.InspectMachine:input_type -> google.protobuf.Empty
+	10, // 34: api.Machine.WaitForStoreVersion:input_type -> api.WaitForStoreVersionRequest
+	2,  // 35: api.Machine.UpdateMachine:input_type -> api.UpdateMachineRequest
+	30, // 36: api.Machine.InspectWireGuardNetwork:input_type -> google.protobuf.Empty
+	12, // 37: api.Machine.Reset:input_type -> api.ResetRequest
+	14, // 38: api.Machine.InspectService:input_type -> api.InspectServiceRequest
+	31, // 39: api.Machine.MachineLogs:input_type -> api.LogsRequest
+	4,  // 40: api.Machine.CheckPrerequisites:output_type -> api.CheckPrerequisitesResponse
+	6,  // 41: api.Machine.InitCluster:output_type -> api.InitClusterResponse
+	30, // 42: api.Machine.JoinCluster:output_type -> google.protobuf.Empty
+	11, // 43: api.Machine.Token:output_type -> api.TokenResponse
+	0,  // 44: api.Machine.Inspect:output_type -> api.MachineInfo
+	8,  // 45: api.Machine.InspectMachine:output_type -> api.InspectMachineResponse
+	30, // 46: api.Machine.WaitForStoreVersion:output_type -> google.protobuf.Empty
+	3,  // 47: api.Machine.UpdateMachine:output_type -> api.UpdateMachineResponse
+	16, // 48: api.Machine.InspectWireGuardNetwork:output_type -> api.InspectWireGuardNetworkResponse
+	30, // 49: api.Machine.Reset:output_type -> google.protobuf.Empty
+	15, // 50: api.Machine.InspectService:output_type -> api.InspectServiceResponse
+	32, // 51: api.Machine.MachineLogs:output_type -> api.LogEntry
+	40, // [40:52] is the sub-list for method output_type
+	28, // [28:40] is the sub-list for method input_type
+	28, // [28:28] is the sub-list for extension type_name
+	28, // [28:28] is the sub-list for extension extendee
+	0,  // [0:28] is the sub-list for field type_name
 }
 
 func init() { file_api_pb_machine_proto_init() }
@@ -1761,7 +1840,7 @@ func file_api_pb_machine_proto_init() {
 			}
 		}
 		file_api_pb_machine_proto_msgTypes[10].Exporter = func(v any, i int) any {
-			switch v := v.(*TokenResponse); i {
+			switch v := v.(*WaitForStoreVersionRequest); i {
 			case 0:
 				return &v.state
 			case 1:
@@ -1773,7 +1852,7 @@ func file_api_pb_machine_proto_init() {
 			}
 		}
 		file_api_pb_machine_proto_msgTypes[11].Exporter = func(v any, i int) any {
-			switch v := v.(*ResetRequest); i {
+			switch v := v.(*TokenResponse); i {
 			case 0:
 				return &v.state
 			case 1:
@@ -1785,7 +1864,7 @@ func file_api_pb_machine_proto_init() {
 			}
 		}
 		file_api_pb_machine_proto_msgTypes[12].Exporter = func(v any, i int) any {
-			switch v := v.(*Service); i {
+			switch v := v.(*ResetRequest); i {
 			case 0:
 				return &v.state
 			case 1:
@@ -1797,7 +1876,7 @@ func file_api_pb_machine_proto_init() {
 			}
 		}
 		file_api_pb_machine_proto_msgTypes[13].Exporter = func(v any, i int) any {
-			switch v := v.(*InspectServiceRequest); i {
+			switch v := v.(*Service); i {
 			case 0:
 				return &v.state
 			case 1:
@@ -1809,7 +1888,7 @@ func file_api_pb_machine_proto_init() {
 			}
 		}
 		file_api_pb_machine_proto_msgTypes[14].Exporter = func(v any, i int) any {
-			switch v := v.(*InspectServiceResponse); i {
+			switch v := v.(*InspectServiceRequest); i {
 			case 0:
 				return &v.state
 			case 1:
@@ -1821,7 +1900,7 @@ func file_api_pb_machine_proto_init() {
 			}
 		}
 		file_api_pb_machine_proto_msgTypes[15].Exporter = func(v any, i int) any {
-			switch v := v.(*InspectWireGuardNetworkResponse); i {
+			switch v := v.(*InspectServiceResponse); i {
 			case 0:
 				return &v.state
 			case 1:
@@ -1833,7 +1912,7 @@ func file_api_pb_machine_proto_init() {
 			}
 		}
 		file_api_pb_machine_proto_msgTypes[16].Exporter = func(v any, i int) any {
-			switch v := v.(*WireGuardPeer); i {
+			switch v := v.(*InspectWireGuardNetworkResponse); i {
 			case 0:
 				return &v.state
 			case 1:
@@ -1845,6 +1924,18 @@ func file_api_pb_machine_proto_init() {
 			}
 		}
 		file_api_pb_machine_proto_msgTypes[17].Exporter = func(v any, i int) any {
+			switch v := v.(*WireGuardPeer); i {
+			case 0:
+				return &v.state
+			case 1:
+				return &v.sizeCache
+			case 2:
+				return &v.unknownFields
+			default:
+				return nil
+			}
+		}
+		file_api_pb_machine_proto_msgTypes[18].Exporter = func(v any, i int) any {
 			switch v := v.(*RTTStats); i {
 			case 0:
 				return &v.state
@@ -1856,7 +1947,7 @@ func file_api_pb_machine_proto_init() {
 				return nil
 			}
 		}
-		file_api_pb_machine_proto_msgTypes[21].Exporter = func(v any, i int) any {
+		file_api_pb_machine_proto_msgTypes[23].Exporter = func(v any, i int) any {
 			switch v := v.(*Service_Container); i {
 			case 0:
 				return &v.state
@@ -1880,7 +1971,7 @@ func file_api_pb_machine_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: file_api_pb_machine_proto_rawDesc,
 			NumEnums:      0,
-			NumMessages:   22,
+			NumMessages:   24,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

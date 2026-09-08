@@ -446,11 +446,11 @@ func (cc *clusterController) waitStoreSync(ctx context.Context) error {
 }
 
 // laggingActors returns target actors whose local version is below the required value, as [have, need].
-func laggingActors(local, target map[string]int64) map[string][2]int64 {
-	lagging := make(map[string][2]int64)
+func laggingActors(local, target map[string]uint64) map[string][2]uint64 {
+	lagging := make(map[string][2]uint64)
 	for actor, need := range target {
 		if have := local[actor]; have < need {
-			lagging[actor] = [2]int64{have, need}
+			lagging[actor] = [2]uint64{have, need}
 		}
 	}
 	return lagging

@@ -73,20 +73,27 @@ func (s *Store) Delete(ctx context.Context, key string) error {
 	return err
 }
 
-// Version returns the cluster store's per-actor version vector:
-// Corrosion actor ID (UUID string) → max received db_version for that actor.
-func (s *Store) Version(ctx context.Context) (map[string]int64, error) {
+// Version returns the replication progress observed by this store.
+// Each entry maps a Corrosion actor UUID to its highest processed database version. Corrosion also counts versions
+// whose changes were superseded and skipped. Versions at or below a reported version may still be missing or pending
+// locally.
+//
+// You can use [Store.WaitForVersion] to wait for replication through these versions, subject to the data-availability
+// limitations documented there.
+//
+// Capturing a vector does not wait for replication or prevent further writes.
+func (s *Store) Version(ctx context.Context) (map[string]uint64, error) {
 	rows, err := s.corro.QueryContext(ctx, "SELECT site_id, db_version FROM crsql_db_versions")
 	if err != nil {
 		return nil, fmt.Errorf("query crsql_db_versions: %w", err)
 	}
 	defer rows.Close()
 
-	versions := make(map[string]int64)
+	versions := make(map[string]uint64)
 	for rows.Next() {
 		var (
 			siteID  []byte
-			version int64
+			version uint64
 		)
 		if err = rows.Scan(&siteID, &version); err != nil {
 			return nil, fmt.Errorf("scan actor version: %w", err)
@@ -102,8 +109,8 @@ func (s *Store) Version(ctx context.Context) (map[string]int64, error) {
 
 type MissingChange struct {
 	ActorID      string
-	StartVersion int64
-	EndVersion   int64
+	StartVersion uint64
+	EndVersion   uint64
 }
 
 // KnownMissingChanges returns a list of currently known missing changes in the Corrosion database.
