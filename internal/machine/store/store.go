@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	_ "embed"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -105,35 +104,6 @@ func (s *Store) Version(ctx context.Context) (map[string]uint64, error) {
 		versions[actor.String()] = version
 	}
 	return versions, nil
-}
-
-type MissingChange struct {
-	ActorID      string
-	StartVersion uint64
-	EndVersion   uint64
-}
-
-// KnownMissingChanges returns a list of currently known missing changes in the Corrosion database.
-func (s *Store) KnownMissingChanges(ctx context.Context) ([]MissingChange, error) {
-	rows, err := s.corro.QueryContext(ctx, "SELECT actor_id, start, end FROM __corro_bookkeeping_gaps")
-	if err != nil {
-		return nil, fmt.Errorf("query missing changes: %w", err)
-	}
-	defer rows.Close()
-
-	var changes []MissingChange
-	for rows.Next() {
-		var c MissingChange
-		var actorBytes []byte
-		if err = rows.Scan(&actorBytes, &c.StartVersion, &c.EndVersion); err != nil {
-			return nil, fmt.Errorf("scan missing change: %w", err)
-		}
-
-		c.ActorID = hex.EncodeToString(actorBytes)
-		changes = append(changes, c)
-	}
-
-	return changes, nil
 }
 
 func (s *Store) CreateMachine(ctx context.Context, m *pb.MachineInfo) error {

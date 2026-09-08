@@ -349,6 +349,59 @@ func TestClusterLifecycle(t *testing.T) {
 		}
 	})
 
+	t.Run("wait for store version edge cases", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		defer cancel()
+
+		cli, err := c.Machines[0].Connect(ctx)
+		require.NoError(t, err)
+		t.Cleanup(func() {
+			require.NoError(t, cli.Close())
+		})
+
+		t.Run("empty vector", func(t *testing.T) {
+			_, err := cli.WaitForStoreVersion(ctx, &pb.WaitForStoreVersionRequest{})
+			require.NoError(t, err)
+		})
+
+		t.Run("zero version for unknown actor", func(t *testing.T) {
+			_, err := cli.WaitForStoreVersion(ctx, &pb.WaitForStoreVersionRequest{
+				MinVersion: map[string]uint64{uuid.NewString(): 0},
+			})
+			require.NoError(t, err)
+		})
+
+		t.Run("invalid actor UUID", func(t *testing.T) {
+			_, err := cli.WaitForStoreVersion(ctx, &pb.WaitForStoreVersionRequest{
+				MinVersion: map[string]uint64{"not-a-uuid": 1},
+			})
+			require.Equal(t, codes.InvalidArgument, status.Code(err))
+		})
+
+		t.Run("unknown actor times out", func(t *testing.T) {
+			waitCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+			defer cancel()
+
+			// Background writes cannot satisfy a target for an actor that does not exist.
+			_, err := cli.WaitForStoreVersion(waitCtx, &pb.WaitForStoreVersionRequest{
+				MinVersion: map[string]uint64{uuid.NewString(): 1},
+			})
+			require.Equal(t, codes.DeadlineExceeded, status.Code(err))
+		})
+
+		t.Run("cancel pending wait", func(t *testing.T) {
+			waitCtx, cancel := context.WithCancel(ctx)
+			defer cancel()
+			timer := time.AfterFunc(500*time.Millisecond, cancel)
+			defer timer.Stop()
+
+			_, err := cli.WaitForStoreVersion(waitCtx, &pb.WaitForStoreVersionRequest{
+				MinVersion: map[string]uint64{uuid.NewString(): 1},
+			})
+			require.Equal(t, codes.Canceled, status.Code(err))
+		})
+	})
+
 	t.Run("remove", func(t *testing.T) {
 		err := p.RemoveCluster(ctx, name)
 		require.NoError(t, err)
