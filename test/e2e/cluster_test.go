@@ -1,9 +1,9 @@
 package e2e
 
 import (
-	"bytes"
 	"context"
 	"errors"
+	"maps"
 	"os"
 	"strings"
 	"testing"
@@ -19,6 +19,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 func createTestCluster(
@@ -178,174 +179,144 @@ func TestClusterLifecycle(t *testing.T) {
 	})
 
 	t.Run("Caddy storage replication", func(t *testing.T) {
-		cli0, err := c.Machines[0].Connect(ctx)
-		require.NoError(t, err)
-		t.Cleanup(func() {
-			require.NoError(t, cli0.Close())
-		})
+		clients := make([]*client.Client, len(c.Machines))
+		for i, m := range c.Machines {
+			cli, err := m.Connect(ctx)
+			require.NoError(t, err)
+			t.Cleanup(func() {
+				require.NoError(t, cli.Close())
+			})
+			clients[i] = cli
+		}
 
-		cli1, err := c.Machines[1].Connect(ctx)
-		require.NoError(t, err)
-		t.Cleanup(func() {
-			require.NoError(t, cli1.Close())
-		})
+		storeVersion := func(clis ...*client.Client) map[string]uint64 {
+			t.Helper()
+			callCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			defer cancel()
+
+			version := make(map[string]uint64)
+			for _, cli := range clis {
+				resp, err := cli.MachineClient.InspectMachine(callCtx, &emptypb.Empty{})
+				require.NoError(t, err)
+				require.Len(t, resp.Machines, 1)
+				m := resp.Machines[0]
+				require.Len(t, m.StoreVersion, 3)
+				for actor, v := range m.StoreVersion {
+					version[actor] = max(version[actor], v)
+				}
+			}
+			return version
+		}
+		waitForStoreVersion := func(cli *client.Client, version map[string]uint64) {
+			t.Helper()
+			waitCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			defer cancel()
+			err := cli.WaitForStoreVersion(waitCtx, version)
+			require.NoError(t, err)
+		}
 
 		prefix := "e2e/caddy-storage/" + uuid.NewString()
 		key := prefix + "/key/path"
+		otherKey := prefix + "/other-key"
 
 		// Keep reused test clusters clean if an assertion stops the test before its explicit deletes.
 		t.Cleanup(func() {
 			cleanupCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
-			_, _ = cli1.CaddyStorage.Delete(client.ProxyMachinesContext(cleanupCtx, nil),
-				&pb.DeleteCaddyStorageRequest{Key: prefix})
+			_, _ = clients[0].CaddyStorage.Delete(cleanupCtx, &pb.DeleteCaddyStorageRequest{Key: prefix})
+			_, _ = clients[1].CaddyStorage.Delete(cleanupCtx, &pb.DeleteCaddyStorageRequest{Key: prefix})
 		})
 
-		// Verify both creation and overwrite, allowing each value to replicate before writing the next.
+		// Create and overwrite a key on the first machine before waiting for replication.
 		var updatedAt time.Time
 		for _, value := range [][]byte{[]byte("test-value"), []byte("replacement-value")} {
-			_, err = cli0.CaddyStorage.Store(ctx, &pb.StoreCaddyStorageRequest{Key: key, Value: value})
+			_, err := clients[0].CaddyStorage.Store(ctx, &pb.StoreCaddyStorageRequest{Key: key, Value: value})
 			require.NoError(t, err)
 
 			// A Load through another machine must find the value on the machine that accepted the local write,
 			// regardless of whether Corrosion has replicated it to the other machines yet.
-			loadResp, err := cli1.CaddyStorage.Load(client.ProxySingleMachineContext(ctx, c.Machines[0].ID),
+			loadResp, err := clients[1].CaddyStorage.Load(client.ProxySingleMachineContext(ctx, c.Machines[0].ID),
 				&pb.LoadCaddyStorageRequest{Key: key})
 			require.NoError(t, err)
-			require.Len(t, loadResp.Messages, 1)
-			originResult := loadResp.Messages[0]
-			require.Nil(t, originResult.Metadata,
-				"Proxy to a single machine should not inject metadata into the response")
-			require.Equal(t, value, originResult.Value)
-			require.NoError(t, originResult.UpdatedAt.CheckValid())
-			modified := originResult.UpdatedAt.AsTime()
+			require.Equal(t, value, loadResp.Value)
+			require.NoError(t, loadResp.UpdatedAt.CheckValid())
+			modified := loadResp.UpdatedAt.AsTime()
 			require.False(t, modified.IsZero(), "Stored value should have a valid updated_at timestamp")
 			if !updatedAt.IsZero() {
-				require.True(t, modified.After(updatedAt), "Overwriting a value should advance updated_at")
+				// Back-to-back writes can have the same timestamp.
+				require.False(t, modified.Before(updatedAt), "Overwriting a value should not move updated_at backwards")
 			}
 			updatedAt = modified
+		}
 
-			require.Eventually(t, func() bool {
-				callCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-				defer cancel()
+		// Write a distinct key on the second machine, then capture the combined store version from both machines.
+		otherValue := []byte("second-value")
+		_, err := clients[1].CaddyStorage.Store(ctx, &pb.StoreCaddyStorageRequest{Key: otherKey, Value: otherValue})
+		require.NoError(t, err)
+		version := storeVersion(clients[0], clients[1])
+		values := map[string][]byte{key: []byte("replacement-value"), otherKey: otherValue}
 
-				resp, err := cli1.CaddyStorage.Load(client.ProxyMachinesContext(callCtx, nil),
-					&pb.LoadCaddyStorageRequest{Key: key})
-				if err != nil {
-					return false
+		// On each machine, wait for the store version to be reached, then verify that the final values are readable
+		// and that the Stat and List endpoints return the expected results.
+		for _, cli := range clients {
+			waitForStoreVersion(cli, version)
+
+			// Both final values must be readable locally as soon as the wait returns.
+			for k, v := range values {
+				resp, err := cli.CaddyStorage.Load(ctx, &pb.LoadCaddyStorageRequest{Key: k})
+				require.NoError(t, err)
+				assert.Equal(t, v, resp.Value)
+				require.NoError(t, resp.UpdatedAt.CheckValid())
+				if k == key {
+					assert.True(t, resp.UpdatedAt.AsTime().Equal(updatedAt))
 				}
 
-				require.Len(t, resp.Messages, 3)
-				for _, m := range resp.Messages {
-					require.NotNil(t, m.Metadata)
-					if m.Metadata.Error != "" || !bytes.Equal(m.Value,
-						value) || !m.UpdatedAt.AsTime().Equal(updatedAt) {
-						return false
-					}
-				}
-				return true
-			}, 30*time.Second, 100*time.Millisecond, "Caddy storage value %q should replicate to every machine", value)
-
-			// Every machine should report the same Caddy storage key information.
-			statResp, err := cli1.CaddyStorage.Stat(client.ProxyMachinesContext(ctx, nil),
-				&pb.StatCaddyStorageRequest{Key: key})
-			require.NoError(t, err)
-			require.Len(t, statResp.Messages, 3)
-			for _, m := range statResp.Messages {
-				require.NotNil(t, m.Metadata)
-				assert.Equal(t, "", m.Metadata.Error)
-				assert.Equal(t, key, m.Key)
-				assert.True(t, m.UpdatedAt.AsTime().Equal(updatedAt))
-				assert.EqualValues(t, len(value), m.Size)
-				assert.True(t, m.IsTerminal)
+				statResp, err := cli.CaddyStorage.Stat(ctx, &pb.StatCaddyStorageRequest{Key: k})
+				require.NoError(t, err)
+				assert.Equal(t, k, statResp.Key)
+				assert.True(t, statResp.UpdatedAt.AsTime().Equal(resp.UpdatedAt.AsTime()))
+				assert.EqualValues(t, len(v), statResp.Size)
+				assert.True(t, statResp.IsTerminal)
 			}
-		}
 
-		// A path with descendants should exist as a directory even though no value is stored at that key.
-		statResp, err := cli1.CaddyStorage.Stat(client.ProxyMachinesContext(ctx, nil),
-			&pb.StatCaddyStorageRequest{Key: prefix + "/key"})
-		require.NoError(t, err)
-		require.Len(t, statResp.Messages, 3)
-		for _, m := range statResp.Messages {
-			require.NotNil(t, m.Metadata)
-			assert.Equal(t, "", m.Metadata.Error)
-			assert.Equal(t, prefix+"/key", m.Key)
-			assert.Nil(t, m.UpdatedAt)
-			assert.EqualValues(t, 0, m.Size)
-			assert.False(t, m.IsTerminal)
-		}
+			// A path with descendants should exist as a directory even though no value is stored at that key.
+			statResp, err := cli.CaddyStorage.Stat(ctx, &pb.StatCaddyStorageRequest{Key: prefix + "/key"})
+			require.NoError(t, err)
+			assert.Equal(t, prefix+"/key", statResp.Key)
+			assert.Nil(t, statResp.UpdatedAt)
+			assert.EqualValues(t, 0, statResp.Size)
+			assert.False(t, statResp.IsTerminal)
 
-		listResp, err := cli1.CaddyStorage.List(client.ProxyMachinesContext(ctx, nil),
-			&pb.ListCaddyStorageRequest{Prefix: prefix, Recursive: true})
-		require.NoError(t, err)
-		require.Len(t, listResp.Messages, 3)
-		for _, m := range listResp.Messages {
-			require.NotNil(t, m.Metadata)
-			assert.Equal(t, "", m.Metadata.Error)
-			assert.Equal(t, []string{prefix + "/key", key}, m.Keys)
-		}
+			listResp, err := cli.CaddyStorage.List(ctx, &pb.ListCaddyStorageRequest{Prefix: prefix, Recursive: true})
+			require.NoError(t, err)
+			assert.Equal(t, []string{prefix + "/key", key, otherKey}, listResp.Keys)
 
-		// A non-recursive list should only return the immediate child keys.
-		listResp, err = cli1.CaddyStorage.List(client.ProxyMachinesContext(ctx, nil),
-			&pb.ListCaddyStorageRequest{Prefix: prefix, Recursive: false})
-		require.NoError(t, err)
-		require.Len(t, listResp.Messages, 3)
-		for _, m := range listResp.Messages {
-			require.NotNil(t, m.Metadata)
-			assert.Equal(t, "", m.Metadata.Error)
-			assert.Equal(t, []string{prefix + "/key"}, m.Keys)
+			// A non-recursive list should only return the immediate child keys.
+			listResp, err = cli.CaddyStorage.List(ctx, &pb.ListCaddyStorageRequest{Prefix: prefix, Recursive: false})
+			require.NoError(t, err)
+			assert.Equal(t, []string{prefix + "/key", otherKey}, listResp.Keys)
 		}
 
 		// Delete through one machine. The deletion must reach the other replicas through Corrosion.
-		_, err = cli1.CaddyStorage.Delete(ctx, &pb.DeleteCaddyStorageRequest{Key: prefix})
+		_, err = clients[2].CaddyStorage.Delete(ctx, &pb.DeleteCaddyStorageRequest{Key: prefix})
 		require.NoError(t, err)
+		version = storeVersion(clients[2])
 
-		require.Eventually(t, func() bool {
-			callCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			defer cancel()
+		for _, cli := range clients {
+			waitForStoreVersion(cli, version)
 
-			resp, err := cli0.CaddyStorage.Load(client.ProxyMachinesContext(callCtx, nil),
-				&pb.LoadCaddyStorageRequest{Key: key})
-			if err != nil {
-				return false
+			for k := range values {
+				_, err = cli.CaddyStorage.Load(ctx, &pb.LoadCaddyStorageRequest{Key: k})
+				assert.Equal(t, codes.NotFound, status.Code(err))
+				_, err = cli.CaddyStorage.Stat(ctx, &pb.StatCaddyStorageRequest{Key: k})
+				assert.Equal(t, codes.NotFound, status.Code(err))
 			}
+			_, err = cli.CaddyStorage.List(ctx, &pb.ListCaddyStorageRequest{Prefix: prefix, Recursive: true})
+			assert.Equal(t, codes.NotFound, status.Code(err))
 
-			require.Len(t, resp.Messages, 3)
-			for _, m := range resp.Messages {
-				require.NotNil(t, m.Metadata)
-				if codes.Code(m.Metadata.Status.GetCode()) != codes.NotFound {
-					return false
-				}
-			}
-			return true
-		}, 30*time.Second, 100*time.Millisecond, "Caddy storage deletion should replicate to every machine")
-
-		statResp, err = cli0.CaddyStorage.Stat(client.ProxyMachinesContext(ctx, nil),
-			&pb.StatCaddyStorageRequest{Key: key})
-		require.NoError(t, err)
-		require.Len(t, statResp.Messages, 3)
-		for _, m := range statResp.Messages {
-			require.NotNil(t, m.Metadata)
-			assert.Equal(t, codes.NotFound, codes.Code(m.Metadata.Status.GetCode()))
-		}
-
-		listResp, err = cli0.CaddyStorage.List(client.ProxyMachinesContext(ctx, nil),
-			&pb.ListCaddyStorageRequest{Prefix: prefix, Recursive: true})
-		require.NoError(t, err)
-		require.Len(t, listResp.Messages, 3)
-		for _, m := range listResp.Messages {
-			require.NotNil(t, m.Metadata)
-			assert.Equal(t, codes.NotFound, codes.Code(m.Metadata.Status.GetCode()))
-		}
-
-		// Delete is idempotent, so every machine should still return a successful response.
-		deleteResp, err := cli1.CaddyStorage.Delete(client.ProxyMachinesContext(ctx, nil),
-			&pb.DeleteCaddyStorageRequest{Key: prefix})
-		require.NoError(t, err)
-		require.Len(t, deleteResp.Messages, 3)
-		for _, m := range deleteResp.Messages {
-			require.NotNil(t, m.Metadata)
-			assert.Equal(t, "", m.Metadata.Error)
+			// Delete is idempotent on each machine.
+			_, err = cli.CaddyStorage.Delete(ctx, &pb.DeleteCaddyStorageRequest{Key: prefix})
+			require.NoError(t, err)
 		}
 	})
 
@@ -359,22 +330,28 @@ func TestClusterLifecycle(t *testing.T) {
 			require.NoError(t, cli.Close())
 		})
 
+		resp, err := cli.MachineClient.InspectMachine(ctx, &emptypb.Empty{})
+		require.NoError(t, err)
+		version := resp.Machines[0].StoreVersion
+		require.Len(t, version, 3)
+
+		t.Run("already satisfied vector", func(t *testing.T) {
+			err := cli.WaitForStoreVersion(ctx, version)
+			require.NoError(t, err)
+		})
+
 		t.Run("empty vector", func(t *testing.T) {
-			_, err := cli.WaitForStoreVersion(ctx, &pb.WaitForStoreVersionRequest{})
+			err := cli.WaitForStoreVersion(ctx, nil)
 			require.NoError(t, err)
 		})
 
 		t.Run("zero version for unknown actor", func(t *testing.T) {
-			_, err := cli.WaitForStoreVersion(ctx, &pb.WaitForStoreVersionRequest{
-				MinVersion: map[string]uint64{uuid.NewString(): 0},
-			})
+			err := cli.WaitForStoreVersion(ctx, map[string]uint64{uuid.NewString(): 0})
 			require.NoError(t, err)
 		})
 
 		t.Run("invalid actor UUID", func(t *testing.T) {
-			_, err := cli.WaitForStoreVersion(ctx, &pb.WaitForStoreVersionRequest{
-				MinVersion: map[string]uint64{"not-a-uuid": 1},
-			})
+			err := cli.WaitForStoreVersion(ctx, map[string]uint64{"not-a-uuid": 1})
 			require.Equal(t, codes.InvalidArgument, status.Code(err))
 		})
 
@@ -383,9 +360,17 @@ func TestClusterLifecycle(t *testing.T) {
 			defer cancel()
 
 			// Background writes cannot satisfy a target for an actor that does not exist.
-			_, err := cli.WaitForStoreVersion(waitCtx, &pb.WaitForStoreVersionRequest{
-				MinVersion: map[string]uint64{uuid.NewString(): 1},
-			})
+			err := cli.WaitForStoreVersion(waitCtx, map[string]uint64{uuid.NewString(): 1})
+			require.Equal(t, codes.DeadlineExceeded, status.Code(err))
+		})
+
+		t.Run("partially satisfied vector times out", func(t *testing.T) {
+			waitCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+			defer cancel()
+
+			minVersion := maps.Clone(version)
+			minVersion[uuid.NewString()] = 1
+			err := cli.WaitForStoreVersion(waitCtx, minVersion)
 			require.Equal(t, codes.DeadlineExceeded, status.Code(err))
 		})
 
@@ -395,9 +380,7 @@ func TestClusterLifecycle(t *testing.T) {
 			timer := time.AfterFunc(500*time.Millisecond, cancel)
 			defer timer.Stop()
 
-			_, err := cli.WaitForStoreVersion(waitCtx, &pb.WaitForStoreVersionRequest{
-				MinVersion: map[string]uint64{uuid.NewString(): 1},
-			})
+			err := cli.WaitForStoreVersion(waitCtx, map[string]uint64{uuid.NewString(): 1})
 			require.Equal(t, codes.Canceled, status.Code(err))
 		})
 	})

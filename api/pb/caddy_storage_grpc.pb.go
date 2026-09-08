@@ -32,11 +32,14 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 //
 // CaddyStorage exposes the CertMagic storage operations backed by the distributed cluster store.
+// Each request operates on the receiving machine's store replica. Callers that need replication to catch up before
+// reading should capture store versions with Machine.InspectMachine and call Machine.WaitForStoreVersion on the
+// receiving machine, subject to that RPC's data-availability limitations (see WaitForStoreVersion docs).
 // See Storage interface in https://github.com/caddyserver/certmagic/blob/master/storage.go.
 type CaddyStorageClient interface {
 	Store(ctx context.Context, in *StoreCaddyStorageRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	Load(ctx context.Context, in *LoadCaddyStorageRequest, opts ...grpc.CallOption) (*LoadCaddyStorageResponse, error)
-	Delete(ctx context.Context, in *DeleteCaddyStorageRequest, opts ...grpc.CallOption) (*EmptyResponse, error)
+	Delete(ctx context.Context, in *DeleteCaddyStorageRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	List(ctx context.Context, in *ListCaddyStorageRequest, opts ...grpc.CallOption) (*ListCaddyStorageResponse, error)
 	Stat(ctx context.Context, in *StatCaddyStorageRequest, opts ...grpc.CallOption) (*StatCaddyStorageResponse, error)
 }
@@ -69,9 +72,9 @@ func (c *caddyStorageClient) Load(ctx context.Context, in *LoadCaddyStorageReque
 	return out, nil
 }
 
-func (c *caddyStorageClient) Delete(ctx context.Context, in *DeleteCaddyStorageRequest, opts ...grpc.CallOption) (*EmptyResponse, error) {
+func (c *caddyStorageClient) Delete(ctx context.Context, in *DeleteCaddyStorageRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(EmptyResponse)
+	out := new(emptypb.Empty)
 	err := c.cc.Invoke(ctx, CaddyStorage_Delete_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
@@ -104,11 +107,14 @@ func (c *caddyStorageClient) Stat(ctx context.Context, in *StatCaddyStorageReque
 // for forward compatibility.
 //
 // CaddyStorage exposes the CertMagic storage operations backed by the distributed cluster store.
+// Each request operates on the receiving machine's store replica. Callers that need replication to catch up before
+// reading should capture store versions with Machine.InspectMachine and call Machine.WaitForStoreVersion on the
+// receiving machine, subject to that RPC's data-availability limitations (see WaitForStoreVersion docs).
 // See Storage interface in https://github.com/caddyserver/certmagic/blob/master/storage.go.
 type CaddyStorageServer interface {
 	Store(context.Context, *StoreCaddyStorageRequest) (*emptypb.Empty, error)
 	Load(context.Context, *LoadCaddyStorageRequest) (*LoadCaddyStorageResponse, error)
-	Delete(context.Context, *DeleteCaddyStorageRequest) (*EmptyResponse, error)
+	Delete(context.Context, *DeleteCaddyStorageRequest) (*emptypb.Empty, error)
 	List(context.Context, *ListCaddyStorageRequest) (*ListCaddyStorageResponse, error)
 	Stat(context.Context, *StatCaddyStorageRequest) (*StatCaddyStorageResponse, error)
 	mustEmbedUnimplementedCaddyStorageServer()
@@ -127,7 +133,7 @@ func (UnimplementedCaddyStorageServer) Store(context.Context, *StoreCaddyStorage
 func (UnimplementedCaddyStorageServer) Load(context.Context, *LoadCaddyStorageRequest) (*LoadCaddyStorageResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Load not implemented")
 }
-func (UnimplementedCaddyStorageServer) Delete(context.Context, *DeleteCaddyStorageRequest) (*EmptyResponse, error) {
+func (UnimplementedCaddyStorageServer) Delete(context.Context, *DeleteCaddyStorageRequest) (*emptypb.Empty, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Delete not implemented")
 }
 func (UnimplementedCaddyStorageServer) List(context.Context, *ListCaddyStorageRequest) (*ListCaddyStorageResponse, error) {

@@ -57,14 +57,12 @@ func (s *Server) Load(ctx context.Context, req *pb.LoadCaddyStorageRequest) (*pb
 	}
 
 	return &pb.LoadCaddyStorageResponse{
-		Messages: []*pb.MachineCaddyStorageValue{{
-			Value:     record.Value,
-			UpdatedAt: timestamppb.New(record.UpdatedAt),
-		}},
+		Value:     record.Value,
+		UpdatedAt: timestamppb.New(record.UpdatedAt),
 	}, nil
 }
 
-func (s *Server) Delete(ctx context.Context, req *pb.DeleteCaddyStorageRequest) (*pb.EmptyResponse, error) {
+func (s *Server) Delete(ctx context.Context, req *pb.DeleteCaddyStorageRequest) (*emptypb.Empty, error) {
 	if err := validateKey(req.Key); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
@@ -77,9 +75,7 @@ func (s *Server) Delete(ctx context.Context, req *pb.DeleteCaddyStorageRequest) 
 		return nil, status.Errorf(codes.Internal, "delete key: %v", err)
 	}
 
-	return &pb.EmptyResponse{
-		Messages: []*pb.Empty{{}},
-	}, nil
+	return &emptypb.Empty{}, nil
 }
 
 func (s *Server) List(ctx context.Context, req *pb.ListCaddyStorageRequest) (*pb.ListCaddyStorageResponse, error) {
@@ -108,9 +104,7 @@ func (s *Server) List(ctx context.Context, req *pb.ListCaddyStorageRequest) (*pb
 	}
 
 	return &pb.ListCaddyStorageResponse{
-		Messages: []*pb.MachineCaddyStorageKeys{{
-			Keys: listKeys(records, req.Prefix, req.Recursive),
-		}},
+		Keys: listKeys(records, req.Prefix, req.Recursive),
 	}, nil
 }
 
@@ -143,12 +137,10 @@ func (s *Server) Stat(ctx context.Context, req *pb.StatCaddyStorageRequest) (*pb
 	record, err := s.store.Get(ctx, req.Key)
 	if err == nil {
 		return &pb.StatCaddyStorageResponse{
-			Messages: []*pb.MachineCaddyStorageKeyInfo{{
-				Key:        req.Key,
-				UpdatedAt:  timestamppb.New(record.UpdatedAt),
-				Size:       int64(len(record.Value)),
-				IsTerminal: true,
-			}},
+			Key:        req.Key,
+			UpdatedAt:  timestamppb.New(record.UpdatedAt),
+			Size:       int64(len(record.Value)),
+			IsTerminal: true,
 		}, nil
 	}
 	if !errors.Is(err, store.ErrKeyNotFound) {
@@ -165,10 +157,8 @@ func (s *Server) Stat(ctx context.Context, req *pb.StatCaddyStorageRequest) (*pb
 	}
 
 	return &pb.StatCaddyStorageResponse{
-		Messages: []*pb.MachineCaddyStorageKeyInfo{{
-			Key:        req.Key,
-			IsTerminal: false,
-		}},
+		Key:        req.Key,
+		IsTerminal: false,
 	}, nil
 }
 
