@@ -32,13 +32,13 @@ available outside the project, so they don't interfere with system packages.
 Build the CLI:
 
 ```shell
-go build -o uc ./cmd/uncloud
+go build -o uc ./cmd/uc
 ```
 
 Or build and run the CLI with a single command:
 
 ```shell
-go run ./cmd/uncloud --help
+go run ./cmd/uc --help
 ```
 
 The Uncloud daemon (`uncloudd`) only supports Linux, so you need to cross-compile it if you're developing on macOS or
@@ -107,7 +107,7 @@ make lint-and-fix
 
 ## Code generation
 
-Update the generated Go code for the machine gRPC API after modifying `.proto` files:
+Update the generated Go code for the gRPC API after modifying files in [`api/pb`](./api/pb):
 
 ```shell
 mise run proto

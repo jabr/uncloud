@@ -6,13 +6,16 @@ import (
 	"testing"
 	"time"
 
+	pb "github.com/psviderski/uncloud/api/pb"
 	"github.com/psviderski/uncloud/internal/corrosion"
-	pb "github.com/psviderski/uncloud/internal/machine/api/pb"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-const testLocalMachineID = "local"
+const (
+	testLocalMachineID  = "local"
+	testRemoteMachineID = "remote"
+)
 
 type mockRTTProvider struct {
 	rtts []corrosion.MemberRTTStats
@@ -70,9 +73,9 @@ func TestCache_ByMachineID(t *testing.T) {
 			},
 			machines: []*pb.MachineInfo{
 				newMockMachine(testLocalMachineID, "10.0.0.1"),
-				newMockMachine("remote", "10.0.0.2"),
+				newMockMachine(testRemoteMachineID, "10.0.0.2"),
 			},
-			queryID: "remote",
+			queryID: testRemoteMachineID,
 			wantRTT: 5 * time.Millisecond,
 			wantOK:  true,
 		},
@@ -133,14 +136,14 @@ func TestCache_RTTFor(t *testing.T) {
 		},
 		{
 			name:    "local machine returns 0",
-			cache:   NewCacheWithStats("local", map[string]Stats{"local": {Median: 0}}),
-			queryID: "local",
+			cache:   NewCacheWithStats(testLocalMachineID, map[string]Stats{testLocalMachineID: {Median: 0}}),
+			queryID: testLocalMachineID,
 			want:    0,
 		},
 		{
 			name:    "known remote returns RTT",
-			cache:   NewCacheWithStats("local", map[string]Stats{"remote": {Median: 5 * time.Millisecond}}),
-			queryID: "remote",
+			cache:   NewCacheWithStats(testLocalMachineID, map[string]Stats{testRemoteMachineID: {Median: 5 * time.Millisecond}}),
+			queryID: testRemoteMachineID,
 			want:    5 * time.Millisecond,
 		},
 		{

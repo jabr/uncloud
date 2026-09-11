@@ -42,12 +42,14 @@ If you rely on a specific Compose feature that is not supported by Uncloud, plea
 | `ports`                          | ⚠️ Limited         | `mode: host` only, use [`x-ports`](2-extensions.md#x-ports) for HTTP/HTTPS                                                                 |
 | `privileged`                     | ✅ Supported        | Run containers in privileged mode                                                                                                          |
 | `pull_policy`                    | ✅ Supported        | `always`, `missing`, `never`                                                                                                               |
-| `secrets`                        | ❌ Not supported    | Use configs or environment variables                                                                                                       |
+| `secrets`                        | ⚠️ Limited         | Reference secrets in `environment`, see [Secrets](../3-concepts/8-secrets.md). File mounts not supported                                   |
 | `security_opt`                   | ❌ Not supported    |                                                                                                                                            |
 | `shm_size`                       | ✅ Supported        | Shared memory size                                                                                                                         |
+| `stdin_open`                     | ✅ Supported        | Allocate standard input and keep it open                                                                                                   |
 | `stop_grace_period`              | ✅ Supported        | Time to wait after SIGTERM before SIGKILL                                                                                                  |
 | `storage_opt`                    | ❌ Not supported    |                                                                                                                                            |
 | `sysctls`                        | ✅ Supported        | Namespaced kernel parameters                                                                                                               |
+| `tty`                            | ✅ Supported        | Allocate a pseudo-TTY and connect the container's standard streams to it                                                                   |
 | `ulimits`                        | ✅ Supported        | Resource limits                                                                                                                            |
 | `user`                           | ✅ Supported        | Set container user                                                                                                                         |
 | `volumes`                        | ✅ Supported        | Named volumes, bind mounts, tmpfs                                                                                                          |

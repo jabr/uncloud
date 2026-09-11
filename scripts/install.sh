@@ -2,6 +2,10 @@
 
 set -euo pipefail
 
+# Avoid locale warnings (e.g. on apt install) from SSH-forwarded LANG/LC_* on minimal hosts. C.UTF-8 is built into
+# glibc and present on all supported distros, unlike locale-specific values like en_US.UTF-8 that may not be generated.
+export LC_ALL="${LC_ALL:-C.UTF-8}"
+
 # If set to 'true', only install the packages and dependencies, without running, reloading, or
 # restarting services or systemd.
 INSTALL_ONLY=${INSTALL_ONLY:-false}
@@ -62,6 +66,35 @@ Your system architecture ($arch) is not supported."
       error "Cannot find systemd to use as a service manager for the Uncloud machine daemon. \
 Uncloud supports only systemd-based Linux systems for now."
   fi
+}
+
+# install_prerequisites ensures curl is available, installing it with the system package manager if needed.
+install_prerequisites() {
+    if command_exists curl; then
+        return
+    fi
+
+    log "⏳ curl is required but not installed, installing it using the system package manager..."
+
+    if command_exists apt-get; then
+        apt-get update -qq >/dev/null
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq curl ca-certificates
+    elif command_exists dnf; then
+        dnf install -y curl ca-certificates
+    elif command_exists yum; then
+        yum install -y curl ca-certificates
+    elif command_exists pacman; then
+        pacman -Sy --noconfirm curl ca-certificates
+    elif command_exists zypper; then
+        zypper --non-interactive refresh >/dev/null
+        zypper --non-interactive install curl ca-certificates
+    else
+        error "curl is required but not installed, and no supported package manager \
+(apt, dnf, yum, pacman, zypper) was found to install it automatically. \
+Please install curl manually and re-run the command."
+    fi
+
+    log "✓ curl installed."
 }
 
 install_docker() {
@@ -187,7 +220,7 @@ install_uncloud_binaries() {
                 # 0.20.0~nightly-abc < 0.20.0 < 0.21.0~nightly-def.
                 # latest_version is always a clean stable tag from releases/latest, so the substitution is one-sided.
                 local newest
-                newest=$(printf '%s\n%s\n' "${installed_version//-/~}" "${latest_version}" | sort -V | tail -n1)
+                newest=$(printf '%s\n%s\n' "${installed_version//-/\~}" "${latest_version}" | sort -V | tail -n1)
                 if [ "${newest}" = "${latest_version}" ]; then
                     log "⏳ Upgrading uncloudd ${installed_version} → ${latest_version}..."
                     uncloudd_url="${UNCLOUD_GITHUB_URL}/releases/download/v${latest_version}/${uncloudd_archive_name}"
@@ -254,7 +287,7 @@ Wants=network-online.target
 [Service]
 Type=notify
 ExecStart=${INSTALL_BIN_DIR}/uncloudd
-TimeoutStartSec=15
+TimeoutStartSec=20
 Restart=always
 RestartSec=2
 
@@ -298,6 +331,7 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 verify_system
+install_prerequisites
 install_docker
 create_uncloud_user_and_group
 install_uncloud_binaries

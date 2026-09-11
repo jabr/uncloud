@@ -11,8 +11,8 @@ import (
 
 	"charm.land/huh/v2"
 	"github.com/cenkalti/backoff/v4"
+	"github.com/psviderski/uncloud/api/pb"
 	"github.com/psviderski/uncloud/internal/cli/tui"
-	"github.com/psviderski/uncloud/internal/machine/api/pb"
 	"github.com/psviderski/uncloud/internal/sshexec"
 	"github.com/psviderski/uncloud/scripts"
 	"google.golang.org/protobuf/types/known/emptypb"
@@ -99,14 +99,14 @@ func provisionMachine(ctx context.Context, exec sshexec.Executor, version string
 }
 
 func promptResetMachine() error {
-	if !tui.IsStdinTerminal() {
+	if !tui.IsTerminalAvailable() {
 		return errors.New("the remote machine is already initialised as a cluster member; " +
 			"cannot ask to confirm reset in non-interactive mode, " +
 			"use --yes flag or set UNCLOUD_AUTO_CONFIRM=true to auto-confirm")
 	}
 
-	fmt.Println(tui.Red.Render("The remote machine is already initialised as a cluster member. Resetting it will:\n" +
-		"- Remove all service containers from the machine\n" +
+	fmt.Fprintln(os.Stderr, tui.Red.Render("The remote machine is already initialised as a cluster member. Resetting it will:\n"+
+		"- Remove all service containers from the machine\n"+
 		"- Reset the Uncloud daemon on the machine to the uninitialised state"))
 
 	var confirm bool
@@ -119,7 +119,9 @@ func promptResetMachine() error {
 				Value(&confirm),
 		),
 	).WithTheme(tui.ThemeConfirmDanger()).
-		WithAccessible(true)
+		WithAccessible(true).
+		// Render to stderr so stdout stays clean for command output.
+		WithOutput(os.Stderr)
 	if err := form.Run(); err != nil {
 		return fmt.Errorf("prompt user to confirm: %w", err)
 	}

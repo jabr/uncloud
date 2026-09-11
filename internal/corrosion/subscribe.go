@@ -22,6 +22,10 @@ var (
 	ChangeTypeDelete ChangeType = "delete"
 )
 
+// ErrSubscriptionNotFound is returned when resubscribing to a subscription that Corrosion
+// no longer knows about (HTTP 404).
+var ErrSubscriptionNotFound = errors.New("subscription not found")
+
 type ChangeEvent struct {
 	Type     ChangeType
 	RowID    uint64
@@ -286,10 +290,25 @@ func (c *APIClient) resubscribeWithBackoffFn(id string) func(context.Context, ui
 		return nil
 	}
 	return func(ctx context.Context, fromChange uint64) (*Subscription, error) {
+		boff := backoff.WithContext(c.newResubBackoff(), ctx)
 		return backoff.RetryWithData(func() (*Subscription, error) {
-			slog.Debug("Retrying to resubscribe to Corrosion query.", "id", id, "from_change", fromChange)
-			return c.ResubscribeContext(ctx, id, fromChange)
-		}, c.newResubBackoff())
+			sub, err := c.ResubscribeContext(ctx, id, fromChange)
+			if err != nil {
+				// A gone subscription can never be resubscribed, so stop retrying immediately and let the caller
+				// recover by creating a fresh subscription.
+				if errors.Is(err, ErrSubscriptionNotFound) {
+					slog.Error("Corrosion subscription no longer exists, giving up resubscribing.",
+						"id", id, "from_change", fromChange)
+					return nil, backoff.Permanent(fmt.Errorf("resubscribe to %s: %w", id, err))
+				}
+				// Don't log retries triggered by context cancellation, the backoff will stop immediately.
+				if ctx.Err() == nil {
+					slog.Error("Failed to resubscribe to Corrosion query. Retrying with backoff.",
+						"id", id, "from_change", fromChange, "err", err)
+				}
+			}
+			return sub, err
+		}, boff)
 	}
 }
 
@@ -312,12 +331,37 @@ func (c *APIClient) ResubscribeContext(ctx context.Context, id string, fromChang
 	}
 
 	if resp.StatusCode != http.StatusOK {
+		if resp.StatusCode == http.StatusNotFound {
+			resp.Body.Close()
+			return nil, ErrSubscriptionNotFound
+		}
+
 		respBody, err := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if err != nil {
 			return nil, fmt.Errorf("read response body: %w", err)
 		}
+
 		return nil, fmt.Errorf("unexpected status code %d: %s", resp.StatusCode, respBody)
+	}
+
+	// Since https://github.com/superfly/corrosion/pull/355, Corrosion treats a resubscription from change 0 like
+	// a fresh subscription: it replays the full query snapshot (a columns event, all rows, and an end-of-query event)
+	// before streaming changes. We don't expose rows in this case, so drain the snapshot here before consuming changes.
+	if fromChange == 0 {
+		rows, err := newRows(ctx, resp.Body, false)
+		if err != nil {
+			resp.Body.Close()
+			return nil, fmt.Errorf("parse resubscribe response: %w", err)
+		}
+		// Drain the replayed rows until the end-of-query event to reach the change stream.
+		for rows.Next() {
+		}
+		if err = rows.Err(); err != nil {
+			resp.Body.Close()
+			return nil, fmt.Errorf("drain resubscribe snapshot: %w", err)
+		}
+		return newSubscription(ctx, id, nil, rows.body, rows.decoder, c.resubscribeWithBackoffFn(id)), nil
 	}
 
 	return newSubscription(ctx, id, nil, resp.Body, nil, c.resubscribeWithBackoffFn(id)), nil

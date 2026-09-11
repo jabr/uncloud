@@ -11,22 +11,25 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/containerd/errdefs"
 	"github.com/docker/docker/client"
 	"github.com/docker/go-connections/sockets"
+	"github.com/psviderski/uncloud/api/pb"
 	"github.com/psviderski/uncloud/internal/corrosion"
 	"github.com/psviderski/uncloud/internal/docker"
 	"github.com/psviderski/uncloud/internal/fs"
 	"github.com/psviderski/uncloud/internal/grpcversion"
 	"github.com/psviderski/uncloud/internal/journal"
-	"github.com/psviderski/uncloud/internal/machine/api/pb"
 	apiproxy "github.com/psviderski/uncloud/internal/machine/api/proxy"
 	"github.com/psviderski/uncloud/internal/machine/caddyconfig"
+	"github.com/psviderski/uncloud/internal/machine/caddystorage"
 	"github.com/psviderski/uncloud/internal/machine/cluster"
 	"github.com/psviderski/uncloud/internal/machine/constants"
 	"github.com/psviderski/uncloud/internal/machine/corromigrate"
@@ -35,10 +38,14 @@ import (
 	machinedocker "github.com/psviderski/uncloud/internal/machine/docker"
 	"github.com/psviderski/uncloud/internal/machine/metrics"
 	"github.com/psviderski/uncloud/internal/machine/network"
+	"github.com/psviderski/uncloud/internal/machine/osinfo"
 	"github.com/psviderski/uncloud/internal/machine/rtt"
 	"github.com/psviderski/uncloud/internal/machine/store"
 	"github.com/psviderski/uncloud/internal/secret"
+	"github.com/psviderski/uncloud/internal/version"
 	"github.com/psviderski/uncloud/pkg/api"
+	"github.com/psviderski/uncloud/pkg/distlock"
+	distlockgrpc "github.com/psviderski/uncloud/pkg/distlock/grpc"
 	"github.com/psviderski/unregistry"
 	"github.com/siderolabs/grpc-proxy/proxy"
 	"golang.org/x/sync/errgroup"
@@ -140,7 +147,7 @@ func (c *Config) SetDefaults() (*Config, error) {
 		cfg.CorrosionService = &corroservice.DockerService{
 			Client:  cfg.DockerClient,
 			Image:   corroservice.Image,
-			Name:    "uncloud-corrosion",
+			Name:    corroservice.ContainerName,
 			DataDir: cfg.CorrosionDataDir,
 			RunDir:  cfg.CorrosionRunDir,
 			User:    fmt.Sprintf("%d:%d", uid, gid),
@@ -304,7 +311,15 @@ func NewMachine(config *Config) (*Machine, error) {
 		WaitForNetworkReady: m.WaitForNetworkReady,
 	})
 	caddyServer := caddyconfig.NewServer(caddyconfig.NewService(config.CaddyConfigDir))
-	m.localMachineServer = newGRPCServer(m, c, m.dockerServer, caddyServer)
+
+	caddyStore, err := corroStore.Keyspace(caddystorage.Namespace)
+	if err != nil {
+		return nil, fmt.Errorf("create namespaced cluster store for Caddy storage: %w", err)
+	}
+	caddyStorageServer := caddystorage.NewServer(caddyStore)
+
+	leaseServer := distlockgrpc.NewServer(distlock.NewMemoryStore())
+	m.localMachineServer = newGRPCServer(m, c, m.dockerServer, caddyServer, caddyStorageServer, leaseServer)
 
 	if m.Initialised() {
 		close(m.initialised)
@@ -313,12 +328,21 @@ func NewMachine(config *Config) (*Machine, error) {
 	return m, nil
 }
 
-func newGRPCServer(m pb.MachineServer, c pb.ClusterServer, d pb.DockerServer, caddy pb.CaddyServer) *grpc.Server {
+func newGRPCServer(
+	m pb.MachineServer,
+	c pb.ClusterServer,
+	d pb.DockerServer,
+	caddy pb.CaddyServer,
+	caddyStorage pb.CaddyStorageServer,
+	lease distlockgrpc.LeaseServer,
+) *grpc.Server {
 	s := grpc.NewServer()
 	pb.RegisterMachineServer(s, m)
 	pb.RegisterClusterServer(s, c)
 	pb.RegisterDockerServer(s, d)
 	pb.RegisterCaddyServer(s, caddy)
+	pb.RegisterCaddyStorageServer(s, caddyStorage)
+	distlockgrpc.RegisterLeaseServer(s, lease)
 	return s
 }
 
@@ -378,6 +402,18 @@ func (m *Machine) Run(ctx context.Context) error {
 	if err := docker.WaitDaemonReady(ctx, m.config.DockerClient); err != nil {
 		return fmt.Errorf("wait for Docker daemon: %w", err)
 	}
+	defer m.config.DockerClient.Close()
+
+	// Bind the local API listeners before starting the dependencies (e.g. corrosion) to not deal with the teardown
+	// on failure.
+	machineListener, err := listenUnixSocket(m.config.MachineSockPath)
+	if err != nil {
+		return fmt.Errorf("listen machine API unix socket %q: %w", m.config.MachineSockPath, err)
+	}
+	proxyListener, err := listenUnixSocket(m.config.UncloudSockPath)
+	if err != nil {
+		return fmt.Errorf("listen API proxy unix socket %q: %w", m.config.UncloudSockPath, err)
+	}
 
 	// Configure and start the corrosion service on the loopback if the machine is not initialised as a cluster
 	// member. This provides the store required for the machine to initialise a new cluster on it. Once the machine
@@ -393,7 +429,7 @@ func (m *Machine) Run(ctx context.Context) error {
 		}
 		slog.Info("Corrosion service started.")
 	} else {
-		// Migrate the on-disk Corrosion store to 2026.5.14 (v1.0.0 upstream) if a v0.x store.db is detected,
+		// Migrate the on-disk Corrosion store to 2026.x.x (v1.0.0 upstream) if a v0.x store.db is detected,
 		// before any Corrosion start attempt. The legacy systemd unit (if installed) is stopped here too
 		// so we own the data dir exclusively.
 		if err := corromigrate.MigrateIfNeeded(ctx, m.config.CorrosionDataDir, m.config.CorrosionUser); err != nil {
@@ -405,10 +441,6 @@ func (m *Machine) Run(ctx context.Context) error {
 	errGroup, ctx := errgroup.WithContext(ctx)
 
 	// Start the local machine API server.
-	machineListener, err := listenUnixSocket(m.config.MachineSockPath)
-	if err != nil {
-		return fmt.Errorf("listen machine API unix socket %q: %w", m.config.MachineSockPath, err)
-	}
 	errGroup.Go(func() error {
 		slog.Info("Starting local machine API server.", "path", m.config.MachineSockPath)
 		if err := m.localMachineServer.Serve(machineListener); err != nil {
@@ -418,10 +450,6 @@ func (m *Machine) Run(ctx context.Context) error {
 	})
 
 	// Start the local API proxy server.
-	proxyListener, err := listenUnixSocket(m.config.UncloudSockPath)
-	if err != nil {
-		return fmt.Errorf("listen API proxy unix socket %q: %w", m.config.UncloudSockPath, err)
-	}
 	errGroup.Go(func() error {
 		slog.Info("Starting local API proxy server.", "path", m.config.UncloudSockPath)
 		if err := m.localProxyServer.Serve(proxyListener); err != nil {
@@ -524,7 +552,7 @@ func (m *Machine) Run(ctx context.Context) error {
 
 			m.mu.Lock()
 			m.clusterCtrl, err = newClusterController(
-				m.state,
+				m,
 				m.store,
 				proxyServer,
 				m.config.CorrosionService,
@@ -565,8 +593,6 @@ func (m *Machine) Run(ctx context.Context) error {
 
 	// Shutdown goroutine.
 	errGroup.Go(func() error {
-		var err error
-
 		<-ctx.Done()
 		slog.Info("Stopping local machine API server.")
 		// TODO: implement timeout for graceful shutdown.
@@ -580,28 +606,31 @@ func (m *Machine) Run(ctx context.Context) error {
 		m.proxyDirector.Close()
 		slog.Info("Local API proxy server stopped.")
 
-		// Stop the corrosion container so this node stops gossiping its membership as "Up" while the
-		// gRPC API is gone. Use a fresh context because ctx is already cancelled here.
-		slog.Info("Stopping corrosion service.")
-		stopCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		if stopErr := m.config.CorrosionService.Stop(stopCtx); stopErr != nil {
-			slog.Error("Failed to stop corrosion service.", "err", stopErr)
-		}
-		cancel()
-
-		// Clean up the machine data and resources if the machine shutdown was initiated by a reset.
-		if m.resetting {
-			slog.Info("Cleaning up machine data and resources.")
-			if err = m.cleanup(); err != nil {
-				slog.Error("Failed to clean up machine data and resources.", "err", err)
-			}
-		}
-
-		m.config.DockerClient.Close()
-		return err
+		return nil
 	})
 
-	return errGroup.Wait()
+	err = errGroup.Wait()
+
+	// Stop the corrosion container only after the API servers, cluster controller, and all components depending on the
+	// store have stopped, so this machine keeps serving the store until then. Use a fresh context because ctx
+	// is already cancelled here.
+	slog.Info("Stopping corrosion service.")
+	stopCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	if stopErr := m.config.CorrosionService.Stop(stopCtx); stopErr != nil {
+		slog.Error("Failed to stop corrosion service.", "err", stopErr)
+	}
+	cancel()
+	slog.Info("Corrosion service stopped.")
+
+	// Clean up the machine data and resources if the machine shutdown was initiated by a reset.
+	if m.resetting {
+		slog.Info("Cleaning up machine data and resources.")
+		if cleanupErr := m.cleanup(); cleanupErr != nil {
+			slog.Error("Failed to clean up machine data and resources.", "err", cleanupErr)
+		}
+	}
+
+	return err
 }
 
 // listenUnixSocket creates a new Unix socket listener with the specified path. The socket file is created with 0660
@@ -674,6 +703,12 @@ func (m *Machine) configureCorrosion() error {
 		Gossip: corroservice.GossipConfig{
 			Addr:      gossipAddr,
 			Bootstrap: bootstrap,
+			// Cap QUIC's MTU conservatively based on the minimum possible WireGuard MTU (1280) rather than this
+			// machine's actual (possibly larger) MTU. Gossip is small control-plane traffic where stability matters
+			// far more than throughput: a fixed small MTU keeps datagrams well within any machine's WireGuard link
+			// and avoids black-holing across heterogeneous underlays where the local MTU can't see the path MTU
+			// to a peer. The gossip (management) address is IPv6, so subtract the IPv6 (40) and UDP (8) headers.
+			MaxMTU:    uint32(network.MinWireGuardMTU - 48),
 			Plaintext: true,
 		},
 		API: corroservice.APIConfig{
@@ -776,9 +811,11 @@ func (m *Machine) InitCluster(ctx context.Context, req *pb.InitClusterRequest) (
 	}
 	slog.Info("Cluster state initialised.", "network", clusterNetwork.String())
 
+	// Default the machine name to the machine's hostname when not explicitly provided.
 	machineName := req.MachineName
 	if machineName == "" {
-		if machineName, err = cluster.NewRandomMachineName(); err != nil {
+		hostname, _ := os.Hostname()
+		if machineName, err = cluster.DefaultMachineName(hostname, nil); err != nil {
 			return nil, status.Errorf(codes.Internal, "generate machine name: %v", err)
 		}
 	}
@@ -787,6 +824,11 @@ func (m *Machine) InitCluster(ctx context.Context, req *pb.InitClusterRequest) (
 	wgPort := uint16(req.WireguardPort)
 	if wgPort == 0 {
 		wgPort = network.DefaultWireGuardPort
+	}
+
+	wgMTU := int(req.WireguardMtu)
+	if wgMTU == 0 {
+		wgMTU = network.DetectMTU()
 	}
 
 	// Use explicitly provided WireGuard endpoints, or use the routable IPs on the machine and its public IP
@@ -841,15 +883,21 @@ func (m *Machine) InitCluster(ctx context.Context, req *pb.InitClusterRequest) (
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
-	// Update the machine state with the new cluster configuration.
+	// Update the machine state with the new cluster configuration. The machine owns its MachineInfo,
+	// so persist the data locally as the source of truth.
 	m.state.ID = addResp.Machine.Id
 	m.state.Name = addResp.Machine.Name
 	m.state.Network = &network.Config{
 		Subnet:        subnet,
 		ManagementIP:  manageIP,
 		WireGuardPort: int(wgPort),
+		MTU:           wgMTU,
 		PrivateKey:    m.state.Network.PrivateKey,
 		PublicKey:     m.state.Network.PublicKey,
+		Endpoints:     endpointsToAddrPorts(addResp.Machine.Network.Endpoints),
+	}
+	if addResp.Machine.PublicIp != nil {
+		m.state.PublicIP, _ = addResp.Machine.PublicIp.ToAddr()
 	}
 	if err = m.state.Save(); err != nil {
 		return nil, status.Errorf(codes.Internal, "save machine state: %v", err)
@@ -891,6 +939,14 @@ func (m *Machine) JoinCluster(_ context.Context, req *pb.JoinClusterRequest) (*e
 	// Update the machine state with the provided cluster configuration.
 	subnet, _ := req.Machine.Network.Subnet.ToPrefix()
 	manageIP, _ := req.Machine.Network.ManagementIp.ToAddr()
+	var publicIP netip.Addr
+	if req.Machine.PublicIp != nil {
+		var err error
+		publicIP, err = req.Machine.PublicIp.ToAddr()
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "invalid public IP: %v", err)
+		}
+	}
 
 	// Resolve the WireGuard listen port from the request, falling back to the default.
 	wgPort := int(req.WireguardPort)
@@ -898,15 +954,25 @@ func (m *Machine) JoinCluster(_ context.Context, req *pb.JoinClusterRequest) (*e
 		wgPort = network.DefaultWireGuardPort
 	}
 
+	wgMTU := int(req.WireguardMtu)
+	if wgMTU == 0 {
+		wgMTU = network.DetectMTU()
+	}
+
+	// Update the machine state with the new cluster configuration. The machine owns its MachineInfo,
+	// so persist the data locally as the source of truth.
 	m.state.ID = req.Machine.Id
 	m.state.Name = req.Machine.Name
 	m.state.Network = &network.Config{
 		Subnet:        subnet,
 		ManagementIP:  manageIP,
 		WireGuardPort: wgPort,
+		MTU:           wgMTU,
 		PrivateKey:    m.state.Network.PrivateKey,
 		PublicKey:     m.state.Network.PublicKey,
+		Endpoints:     endpointsToAddrPorts(req.Machine.Network.Endpoints),
 	}
+	m.state.PublicIP = publicIP
 	m.state.MinStoreVersion = req.MinStoreVersion
 
 	// Build a peers config from other cluster machines.
@@ -951,6 +1017,22 @@ func (m *Machine) JoinCluster(_ context.Context, req *pb.JoinClusterRequest) (*e
 	return &emptypb.Empty{}, nil
 }
 
+// endpointsToAddrPorts converts pb.IPPort endpoints to netip.AddrPort, skipping any that fail to parse.
+func endpointsToAddrPorts(endpoints []*pb.IPPort) []netip.AddrPort {
+	if len(endpoints) == 0 {
+		return nil
+	}
+	addrPorts := make([]netip.AddrPort, 0, len(endpoints))
+	for _, ep := range endpoints {
+		ap, err := ep.ToAddrPort()
+		if err != nil {
+			continue
+		}
+		addrPorts = append(addrPorts, ap)
+	}
+	return addrPorts
+}
+
 // Token returns the local machine's token that can be used for adding the machine to a cluster.
 func (m *Machine) Token(_ context.Context, _ *emptypb.Empty) (*pb.TokenResponse, error) {
 	if len(m.state.Network.PublicKey) == 0 {
@@ -980,17 +1062,57 @@ func (m *Machine) Token(_ context.Context, _ *emptypb.Empty) (*pb.TokenResponse,
 	return &pb.TokenResponse{Token: tokenStr}, nil
 }
 
-// Deprecated: use InspectMachine instead.
-func (m *Machine) Inspect(_ context.Context, _ *emptypb.Empty) (*pb.MachineInfo, error) {
-	return &pb.MachineInfo{
+// Info returns the machine configuration and runtime details.
+func (m *Machine) Info(ctx context.Context) *pb.MachineInfo {
+	// Best-effort fetch of the Docker engine version. It stays empty if the engine is unavailable.
+	var dockerVersion string
+	if m.dockerService != nil {
+		v, err := m.dockerService.Client.ServerVersion(ctx)
+		if err != nil {
+			slog.Debug("Failed to get Docker engine version.", "err", err)
+		} else {
+			dockerVersion = v.Version
+		}
+	}
+
+	hostname, _ := os.Hostname()
+	osName := osinfo.PrettyName()
+	kernelVersion := osinfo.KernelVersion()
+
+	m.state.mu.RLock()
+	defer m.state.mu.RUnlock()
+
+	endpoints := make([]*pb.IPPort, len(m.state.Network.Endpoints))
+	for i, ep := range m.state.Network.Endpoints {
+		endpoints[i] = pb.NewIPPort(ep)
+	}
+
+	info := &pb.MachineInfo{
 		Id:   m.state.ID,
 		Name: m.state.Name,
 		Network: &pb.NetworkConfig{
 			Subnet:       pb.NewIPPrefix(m.state.Network.Subnet),
 			ManagementIp: pb.NewIP(m.state.Network.ManagementIP),
+			Endpoints:    endpoints,
 			PublicKey:    m.state.Network.PublicKey,
 		},
-	}, nil
+		DaemonVersion: version.String(),
+		DockerVersion: dockerVersion,
+		Hostname:      hostname,
+		Arch:          runtime.GOARCH,
+		OsPrettyName:  osName,
+		KernelVersion: kernelVersion,
+	}
+	if m.state.PublicIP.IsValid() {
+		info.PublicIp = pb.NewIP(m.state.PublicIP)
+	}
+
+	return info
+}
+
+// Deprecated: use InspectMachine instead.
+func (m *Machine) Inspect(ctx context.Context, _ *emptypb.Empty) (*pb.MachineInfo, error) {
+	return m.Info(ctx), nil
 }
 
 func (m *Machine) InspectMachine(ctx context.Context, _ *emptypb.Empty) (*pb.InspectMachineResponse, error) {
@@ -1011,20 +1133,104 @@ func (m *Machine) InspectMachine(ctx context.Context, _ *emptypb.Empty) (*pb.Ins
 		Machines: []*pb.MachineDetails{
 			{
 				// Metadata is injected by the gRPC proxy.
-				Machine: &pb.MachineInfo{
-					Id:   m.state.ID,
-					Name: m.state.Name,
-					Network: &pb.NetworkConfig{
-						Subnet:       pb.NewIPPrefix(m.state.Network.Subnet),
-						ManagementIp: pb.NewIP(m.state.Network.ManagementIP),
-						PublicKey:    m.state.Network.PublicKey,
-					},
-				},
+				Machine:      m.Info(ctx),
 				StoreVersion: storeVersion,
 				Rtts:         rtts,
 			},
 		},
 	}, nil
+}
+
+func (m *Machine) WaitForStoreVersion(ctx context.Context, req *pb.WaitForStoreVersionRequest) (*emptypb.Empty, error) {
+	if err := m.store.WaitForVersion(ctx, req.MinVersion); err != nil {
+		if ctx.Err() != nil {
+			return nil, status.FromContextError(ctx.Err()).Err()
+		}
+		if errors.Is(err, store.ErrInvalidStoreVersion) {
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		}
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	return &emptypb.Empty{}, nil
+}
+
+// UpdateMachine updates the configuration of this machine in its local state (the source of truth) and syncs
+// the result to the cluster store.
+func (m *Machine) UpdateMachine(ctx context.Context, req *pb.UpdateMachineRequest) (*pb.UpdateMachineResponse, error) {
+	if !m.Initialised() {
+		return nil, status.Error(codes.FailedPrecondition, "machine is not configured as a cluster member")
+	}
+
+	if err := m.applyMachineUpdate(ctx, req); err != nil {
+		return nil, err
+	}
+
+	m.mu.RLock()
+	clusterCtrl := m.clusterCtrl
+	m.mu.RUnlock()
+	if clusterCtrl != nil {
+		clusterCtrl.RequestMachineSync()
+	}
+
+	info := m.Info(ctx)
+	slog.Info("Machine configuration updated.", "id", info.Id, "name", info.Name)
+	return &pb.UpdateMachineResponse{Machine: info}, nil
+}
+
+// applyMachineUpdate validates the request and applies it to the local machine state under the write lock,
+// then persists the state to disk.
+func (m *Machine) applyMachineUpdate(ctx context.Context, req *pb.UpdateMachineRequest) error {
+	m.state.mu.Lock()
+	defer m.state.mu.Unlock()
+
+	if req.Name != nil {
+		if *req.Name == "" {
+			return status.Error(codes.InvalidArgument, "machine name cannot be empty")
+		}
+		// Check for duplicate names across the cluster, excluding this machine.
+		if *req.Name != m.state.Name {
+			machines, err := m.store.ListMachines(ctx)
+			if err != nil {
+				return status.Errorf(codes.Internal, "list machines: %v", err)
+			}
+			for _, other := range machines {
+				if other.Id != m.state.ID && other.Name == *req.Name {
+					return status.Errorf(codes.AlreadyExists, "machine with name '%s' already exists", *req.Name)
+				}
+			}
+		}
+		m.state.Name = *req.Name
+	}
+
+	if req.PublicIp != nil {
+		// An empty IP signals removal of the public IP.
+		if len(req.PublicIp.Ip) == 0 {
+			m.state.PublicIP = netip.Addr{}
+		} else {
+			ip, err := req.PublicIp.ToAddr()
+			if err != nil {
+				return status.Errorf(codes.InvalidArgument, "invalid public IP: %v", err)
+			}
+			m.state.PublicIP = ip
+		}
+	}
+
+	if len(req.Endpoints) > 0 {
+		endpoints := make([]netip.AddrPort, len(req.Endpoints))
+		for i, ep := range req.Endpoints {
+			ap, err := ep.ToAddrPort()
+			if err != nil {
+				return status.Errorf(codes.InvalidArgument, "invalid endpoint: %v", err)
+			}
+			endpoints[i] = ap
+		}
+		m.state.Network.Endpoints = endpoints
+	}
+
+	if err := m.state.Save(); err != nil {
+		return status.Errorf(codes.Internal, "save machine state: %v", err)
+	}
+	return nil
 }
 
 // getMachineRTTs retrieves round-trip times to other machines in the cluster
@@ -1204,7 +1410,7 @@ func (m *Machine) InspectService(
 // logsHeartbeatInterval is the interval at which heartbeat entries are sent when there are no logs to stream.
 const logsHeartbeatInterval = 200 * time.Millisecond
 
-// MachineLogs streams logs from a systemd service.
+// MachineLogs streams logs from a system service.
 func (m *Machine) MachineLogs(
 	req *pb.LogsRequest, stream grpc.ServerStreamingServer[pb.LogEntry],
 ) error {
@@ -1218,16 +1424,31 @@ func (m *Machine) MachineLogs(
 		Until:  req.Until,
 	}
 
-	logsCh, err := journal.Logs(ctx, req.Id, opts)
+	var logsCh <-chan api.LogEntry
+	var err error
+	log := slog.With("stream_id", fmt.Sprintf("%p", stream)[2:])
+	switch req.Id {
+	case api.SystemServiceUncloud, api.SystemServiceDocker:
+		// These run as systemd units whose names match the service name.
+		logsCh, err = journal.Logs(ctx, req.Id, opts)
+		log = log.With("unit", req.Id)
+	case api.SystemServiceCorrosion:
+		// Corrosion runs as a daemon-managed container, not a systemd unit, so read its logs
+		// from the container, the same way `uc logs` does for service containers.
+		logsCh, err = m.dockerService.ContainerLogs(ctx, corroservice.ContainerName, opts)
+		log = log.With("container", corroservice.ContainerName)
+	default:
+		return status.Errorf(codes.InvalidArgument, "unsupported system service %q; supported services: %s",
+			req.Id, strings.Join(api.SystemServices, ", "))
+	}
 	if err != nil {
 		if errdefs.IsNotFound(err) {
 			return status.Error(codes.NotFound, err.Error())
 		}
-		return status.Errorf(codes.Internal, "get journal logs: %v", err)
+		return status.Errorf(codes.Internal, "get logs: %v", err)
 	}
 
-	log := slog.With("unit", req.Id, "stream_id", fmt.Sprintf("%p", stream)[2:])
-	log.Debug("Starting systemd service logs streaming.",
+	log.Debug("Starting system service logs streaming.",
 		"follow", req.Follow, "tail", req.Tail, "since", req.Since, "until", req.Until)
 
 	// Heartbeats are needed only when following logs to let the client know when there are no new log entries

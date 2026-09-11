@@ -36,8 +36,7 @@ The script will:
 
 - Detect your operating system and architecture
 - Download the appropriate latest binary from [GitHub releases](https://github.com/psviderski/uncloud/releases)
-- Install it to `/usr/local/bin/uncloud` using `sudo` (you may need to enter your user password)
-- Create a shortcut `uc` in `/usr/local/bin` for convenience
+- Install it to `/usr/local/bin/uc` using `sudo` (you may need to enter your user password)
 
 Don't like `curl | sh`? You can download and review the [install script](https://get.uncloud.run/install.sh) first and
 then run it:
@@ -58,6 +57,12 @@ curl -fsS https://get.uncloud.run/install.sh | VERSION=nightly sh
 
 More information about nightly builds of the CLI and daemon can be found [here](https://github.com/psviderski/uncloud/releases/tag/nightly).
 
+## mise
+You can install uncloud with [mise](https://mise.jdx.dev/):
+```
+mise use github:psviderski/uncloud[exe=uc]
+```
+
 ## GitHub download (macOS, Linux)
 
 You can manually download and use a pre-built binary from the
@@ -66,26 +71,22 @@ You can manually download and use a pre-built binary from the
 <Tabs>
   <TabItem value="macOS (Apple Silicon)">
     ```shell
-    curl -L https://github.com/psviderski/uncloud/releases/latest/download/uncloud_macos_arm64.tar.gz | tar xz
-    mv uncloud uc
+    curl -L https://github.com/psviderski/uncloud/releases/latest/download/uc_macos_arm64.tar.gz | tar xz
     ```
   </TabItem>
   <TabItem value="macOS (Intel)">
     ```shell
-    curl -L https://github.com/psviderski/uncloud/releases/latest/download/uncloud_macos_amd64.tar.gz | tar xz
-    mv uncloud uc
+    curl -L https://github.com/psviderski/uncloud/releases/latest/download/uc_macos_amd64.tar.gz | tar xz
     ```
   </TabItem>
   <TabItem value="Linux (AMD 64-bit)">
     ```shell
-    curl -L https://github.com/psviderski/uncloud/releases/latest/download/uncloud_linux_amd64.tar.gz | tar xz
-    mv uncloud uc
+    curl -L https://github.com/psviderski/uncloud/releases/latest/download/uc_linux_amd64.tar.gz | tar xz
     ```
   </TabItem>
   <TabItem value="Linux (ARM 64-bit)">
     ```shell
-    curl -L https://github.com/psviderski/uncloud/releases/latest/download/uncloud_linux_arm64.tar.gz | tar xz
-    mv uncloud uc
+    curl -L https://github.com/psviderski/uncloud/releases/latest/download/uc_linux_arm64.tar.gz | tar xz
     ```
   </TabItem>
 </Tabs>
@@ -104,13 +105,15 @@ Follow the same steps to upgrade to the latest version in the future.
 ## Debian
 
 On a Debian system, you can install Uncloud CLI from an unofficial
-[repository](https://debian.griffo.io/) maintained by
+[repository](https://deb.griffo.io/) maintained by
 [@dariogriffo](https://github.com/dariogriffo):
 
 ```shell
-curl -sS https://debian.griffo.io/EA0F721D231FDD3A0A17B9AC7808B4DD62C41256.asc | sudo gpg --dearmor --yes -o /etc/apt/trusted.gpg.d/debian.griffo.io.gpg
-echo "deb https://debian.griffo.io/apt $(lsb_release -sc 2>/dev/null) main" | sudo tee /etc/apt/sources.list.d/debian.griffo.io.list
-apt install -y uncloud
+sudo install -d -m 0755 /etc/apt/keyrings
+curl -fsSL https://deb.griffo.io/EA0F721D231FDD3A0A17B9AC7808B4DD62C41256.asc | sudo gpg --dearmor --yes -o /etc/apt/keyrings/deb.griffo.io.gpg
+echo "deb [signed-by=/etc/apt/keyrings/deb.griffo.io.gpg] https://deb.griffo.io/apt $(lsb_release -sc 2>/dev/null) main" | sudo tee /etc/apt/sources.list.d/deb.griffo.io.list
+sudo apt update
+sudo apt install -y uncloud
 ```
 
 Alternatively, you can download `.deb` packages directly from the repository
@@ -121,7 +124,7 @@ Alternatively, you can download `.deb` packages directly from the repository
 After installation, verify that `uc` command is working:
 
 ```shell
-uc --version
+uc version
 ```
 
 ## Next steps

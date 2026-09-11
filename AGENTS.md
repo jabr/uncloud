@@ -72,7 +72,7 @@ management.
 
 - **`cmd/`**: Contains main applications
 
-    - `uncloud/`: CLI tool with subcommands for machine, service, volume management
+    - `uc/`: CLI tool with subcommands for machine, service, volume management
     - `uncloudd/`: Daemon that runs on each machine
     - `ucind/`: Development cluster management for testing
 
@@ -131,7 +131,7 @@ github.com/siderolabs/grpc-proxy // gRPC proxy for forwarding
 
 ```bash
 # Build binaries
-go build -o uncloud ./cmd/uncloud
+go build -o uc ./cmd/uc
 go build -o uncloudd ./cmd/uncloudd
 ```
 
@@ -188,7 +188,7 @@ uc context use <name>           # Switch context
 - **Package naming**: Use clear, descriptive names
 - **Error handling**: Wrap errors with context using `fmt.Errorf`
 - **Logging**: Use structured logging with levels
-- **gRPC**: Services defined in `internal/machine/api/pb/`
+- **gRPC**: Services defined in `api/pb/`
 
 ### Testing
 
@@ -239,7 +239,7 @@ uc context use <name>           # Switch context
 
 ### Important Files to Understand
 
-- `cmd/uncloud/main.go`: CLI entry point and command structure
+- `cmd/uc/main.go`: CLI entry point and command structure
 - `internal/cli/cli.go`: CLI implementation and configuration
 - `internal/machine/machine.go`: Core machine management
 - `pkg/api/`: Public API definitions

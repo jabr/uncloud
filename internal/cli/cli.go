@@ -8,9 +8,10 @@ import (
 	"slices"
 
 	"github.com/docker/cli/cli/streams"
+	"github.com/psviderski/uncloud/api/pb"
 	"github.com/psviderski/uncloud/internal/cli/config"
 	"github.com/psviderski/uncloud/internal/machine"
-	"github.com/psviderski/uncloud/internal/machine/api/pb"
+	"github.com/psviderski/uncloud/internal/machine/cluster"
 	"github.com/psviderski/uncloud/internal/machine/network"
 	"github.com/psviderski/uncloud/internal/sshexec"
 	"github.com/psviderski/uncloud/pkg/api"
@@ -175,6 +176,7 @@ type InitClusterOptions struct {
 	Version            string
 	AutoConfirm        bool
 	WireguardEndpoints []*pb.IPPort
+	WireguardMTU       int
 	WireguardPort      int
 }
 
@@ -236,6 +238,7 @@ func (cli *CLI) initRemoteMachine(ctx context.Context, opts InitClusterOptions) 
 		MachineName:        opts.MachineName,
 		Network:            pb.NewIPPrefix(opts.Network),
 		WireguardEndpoints: opts.WireguardEndpoints,
+		WireguardMtu:       int32(opts.WireguardMTU),
 		WireguardPort:      int32(opts.WireguardPort),
 	}
 	if opts.PublicIP != nil {
@@ -320,6 +323,7 @@ type AddMachineOptions struct {
 	Version            string
 	AutoConfirm        bool
 	WireguardEndpoints []*pb.IPPort
+	WireguardMTU       int
 	WireguardPort      int
 }
 
@@ -327,7 +331,7 @@ type AddMachineOptions struct {
 // The cluster client is connected to the existing machine in the cluster. It was used to add the new machine to the
 // cluster. The machine client is connected to the new machine and can be used to interact with it.
 // Both client should be closed after use by the caller.
-func (cli *CLI) AddMachine(ctx context.Context, opts AddMachineOptions) (*client.Client, *client.Client, error) {
+func (cli *CLI) AddMachine(ctx context.Context, opts AddMachineOptions) (_ *client.Client, _ *client.Client, err error) {
 	contextName := cli.ContextOverrideOrCurrent()
 	c, err := cli.ConnectCluster(ctx)
 	if err != nil {
@@ -348,16 +352,19 @@ func (cli *CLI) AddMachine(ctx context.Context, opts AddMachineOptions) (*client
 			machineClient.Close()
 		}
 	}()
+	// IMPORTANT: 'err' is a named return value so the deferred cleanups above observe it on every error return.
+	// Do not shadow it with ':=' in a nested scope, or the deferred client cleanup would be skipped on error.
 
 	// Check if the machine is already initialised as a cluster member and prompt the user to reset it first.
-	// TODO: refactor to use client.InspectMachine.
-	minfo, err := machineClient.Inspect(ctx, &emptypb.Empty{})
+	inspectResp, err := machineClient.MachineClient.InspectMachine(ctx, nil)
 	if err != nil {
 		return nil, nil, fmt.Errorf("inspect machine: %w", err)
 	}
+	minfo := inspectResp.Machines[0].Machine
 	if minfo.Id != "" {
 		// Check if the machine is already a member of this cluster.
-		machines, err := c.ListMachines(ctx, nil)
+		var machines api.MachineMembersList
+		machines, err = c.ListMachines(ctx, nil)
 		if err != nil {
 			return nil, nil, fmt.Errorf("list cluster machines: %w", err)
 		}
@@ -413,8 +420,24 @@ func (cli *CLI) AddMachine(ctx context.Context, opts AddMachineOptions) (*client
 			endpoints[i] = pb.NewIPPort(addrPort)
 		}
 	}
+	// Default the machine name to the machine's hostname when not explicitly provided, ensuring it is
+	// unique within the cluster.
+	machineName := opts.MachineName
+	if machineName == "" {
+		var machines api.MachineMembersList
+		if machines, err = c.ListMachines(ctx, nil); err != nil {
+			return nil, nil, fmt.Errorf("list cluster machines: %w", err)
+		}
+		existing := make([]string, len(machines))
+		for i, m := range machines {
+			existing[i] = m.Machine.Name
+		}
+		if machineName, err = cluster.DefaultMachineName(minfo.Hostname, existing); err != nil {
+			return nil, nil, fmt.Errorf("generate machine name: %w", err)
+		}
+	}
 	addReq := &pb.AddMachineRequest{
-		Name: opts.MachineName,
+		Name: machineName,
 		Network: &pb.NetworkConfig{
 			Endpoints: endpoints,
 			PublicKey: token.PublicKey,
@@ -435,8 +458,8 @@ func (cli *CLI) AddMachine(ctx context.Context, opts AddMachineOptions) (*client
 	}
 
 	// Snapshot the cluster store version so the new machine can catch up before participating.
-	var storeVersion map[string]int64
-	inspectResp, err := c.MachineClient.InspectMachine(ctx, &emptypb.Empty{})
+	var storeVersion map[string]uint64
+	inspectResp, err = c.MachineClient.InspectMachine(ctx, &emptypb.Empty{})
 	if err != nil {
 		// TODO(lhf): remove Unimplemented check when v0.17.0 is released.
 		if status.Convert(err).Code() != codes.Unimplemented {
@@ -463,6 +486,7 @@ func (cli *CLI) AddMachine(ctx context.Context, opts AddMachineOptions) (*client
 		Machine:         addResp.Machine,
 		OtherMachines:   otherMachines,
 		MinStoreVersion: storeVersion,
+		WireguardMtu:    int32(opts.WireguardMTU),
 		WireguardPort:   int32(opts.WireguardPort),
 	}
 	if _, err = machineClient.JoinCluster(ctx, joinReq); err != nil {

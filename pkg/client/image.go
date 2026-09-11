@@ -25,9 +25,9 @@ import (
 	"github.com/docker/docker/pkg/jsonmessage"
 	"github.com/docker/go-connections/nat"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/psviderski/uncloud/api/pb"
 	"github.com/psviderski/uncloud/internal/cli/tui"
 	"github.com/psviderski/uncloud/internal/docker"
-	"github.com/psviderski/uncloud/internal/machine/api/pb"
 	"github.com/psviderski/uncloud/internal/machine/constants"
 	"github.com/psviderski/uncloud/internal/machine/network"
 	"github.com/psviderski/uncloud/internal/proxy"
@@ -59,7 +59,7 @@ func (cli *Client) InspectRemoteImage(ctx context.Context, id string) ([]api.Mac
 // it lists images on all machines.
 func (cli *Client) ListImages(ctx context.Context, filter api.ImageFilter) ([]api.MachineImages, error) {
 	// Broadcast the image list request to the specified machines or all machines if none specified.
-	listCtx := cli.ProxyMachinesContext(ctx, filter.Machines)
+	listCtx := ProxyMachinesContext(ctx, filter.Machines)
 
 	opts := image.ListOptions{Manifests: true}
 	if filter.Name != "" {
@@ -87,21 +87,12 @@ func (cli *Client) ListImages(ctx context.Context, filter api.ImageFilter) ([]ap
 			continue
 		}
 
-		if msg.Metadata.Error != "" {
-			// Continue processing other messages even if some machines return an error to avoid a partial failure
-			// of the entire command.
-			tui.PrintWarning(fmt.Sprintf(
-				"failed to list images on machine %s: %s", msg.Metadata.MachineName, msg.Metadata.Error,
-			))
-			continue
-		}
-
 		mi := api.MachineImages{
 			Metadata:        msg.Metadata,
 			ContainerdStore: msg.ContainerdStore,
 		}
 
-		if len(msg.Images) > 0 {
+		if msg.Metadata.Error == "" && len(msg.Images) > 0 {
 			if err = json.Unmarshal(msg.Images, &mi.Images); err != nil {
 				return nil, fmt.Errorf("unmarshal images: %w", err)
 			}
@@ -223,12 +214,15 @@ func (cli *Client) pushImageToMachine(
 		Machines: []string{machine.Id},
 		Name:     "%invalid-name-to-only-check-store-type%",
 	})
+	if err == nil {
+		err = images[0].Error()
+	}
 	if err != nil {
 		return fmt.Errorf("check Docker image store type on machine '%s': %w", machine.Name, err)
 	}
 
 	// Only support Docker with containerd image store enabled to avoid the confusion of pushing images to containerd
-	// and then not being able to see and use them in Docker.
+	// and then not being able to use them in Docker.
 	if !images[0].ContainerdStore {
 		pw.Event(progress.NewEvent(pushEventID, progress.Error, "containerd image store required"))
 		return fmt.Errorf("docker on machine '%s' is not using containerd image store, "+
@@ -258,12 +252,18 @@ func (cli *Client) pushImageToMachine(
 	// The proxy runs in a goroutine. Capture the first error in a channel
 	// so we can surface it alongside the push error if push fails.
 	proxyErrCh := make(chan error, 1)
-	onProxyError := func(err error) {
+	recordProxyError := func(err error) {
 		select {
 		case proxyErrCh <- fmt.Errorf("proxy to unregistry: %w", err):
 		default:
 		}
 		pw.Event(progress.NewEvent(proxyEventID, progress.Error, err.Error()))
+	}
+	onProxyError := func(err error) {
+		if proxy.IsConnectionClosedError(err) {
+			return
+		}
+		recordProxyError(err)
 	}
 
 	// socketPath is set for plain rootless Docker (not running inside a VM): the Go proxy listens on a unix
@@ -321,7 +321,11 @@ func (cli *Client) pushImageToMachine(
 	}
 	defer cleanup()
 
-	go unregProxy.Run(proxyCtx)
+	go func() {
+		if err := unregProxy.Run(proxyCtx); err != nil {
+			recordProxyError(err)
+		}
+	}()
 
 	if dockerEnv.Virtualised {
 		// VM-based Docker (Docker Desktop, Rancher Desktop, etc.): run a socat container inside the VM

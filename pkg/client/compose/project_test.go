@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/compose-spec/compose-go/v2/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -189,7 +190,7 @@ REDIS_URL=redis://localhost:6379
 	}
 }
 
-// TestLoadProject_Unsupported checks that unsupported features lead to warnings.
+// TestLoadProject_Unsupported checks that unsupported features lead to warnings or errors.
 func TestLoadProject_Unsupported(t *testing.T) {
 	// captureStderr runs fn while capturing stderr output and returns what was written.
 	captureStderr := func(t *testing.T, fn func()) string {
@@ -214,6 +215,7 @@ func TestLoadProject_Unsupported(t *testing.T) {
 		composeYAML  string
 		warnCount    int
 		warnContains []string
+		shouldErr    bool
 	}{
 		{
 			name: "unsupported dns",
@@ -296,12 +298,101 @@ networks:
 `,
 			warnCount: 0,
 		},
+		{
+			name: "relative volume sources",
+			composeYAML: `services:
+  app:
+    image: myapp:latest
+    volumes:
+      - ./mypath/conf:/conf:ro
+      - data:/var/lib/data
+
+volumes:
+  data:
+`,
+			shouldErr: true,
+		},
+		{
+			name: "home-relative volume source",
+			composeYAML: `services:
+  app:
+    image: myapp:latest
+    volumes:
+      - ~/conf:/conf:ro
+`,
+			shouldErr: true,
+		},
+		{
+			name: "external configs",
+			composeYAML: `services:
+  app:
+    image: myapp:latest
+configs:
+  http_config:
+    external: true
+`,
+			warnCount:    1,
+			warnContains: []string{"external"},
+		},
+		{
+			name: "container_name",
+			composeYAML: `services:
+  app:
+    image: myapp:latest
+    container_name: my_container
+`,
+			warnCount:    1,
+			warnContains: []string{"container_name"},
+		},
+		{
+			name: "deploy labels",
+			composeYAML: `services:
+  app:
+    image: myapp:latest
+    deploy:
+      mode: replicated
+      labels:
+        - foo
+      replicas: 2
+`,
+			warnCount:    1,
+			warnContains: []string{"deploy labels"},
+		},
+		{
+			name: "deploy restart_policy",
+			composeYAML: `services:
+  app:
+    image: myapp:latest
+    deploy:
+      restart_policy:
+        condition: on-failure
+`,
+			warnCount:    1,
+			warnContains: []string{"deploy restart_policy"},
+		},
+		{
+			name: "deploy placement",
+			composeYAML: `services:
+  app:
+    image: myapp:latest
+    deploy:
+      placement:
+        preferences:
+          - spread: foo
+`,
+			warnCount:    1,
+			warnContains: []string{"deploy placement"},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			stderr := captureStderr(t, func() {
 				_, err := LoadProjectFromContent(context.Background(), tt.composeYAML)
+				if tt.shouldErr {
+					require.Error(t, err)
+					return
+				}
 				require.NoError(t, err)
 			})
 
@@ -314,6 +405,143 @@ networks:
 					assert.Contains(t, stderr, substr)
 				}
 			}
+		})
+	}
+}
+
+// TestLoadProject_Secrets covers loading and validation of all top-level secret source combinations.
+func TestLoadProject_Secrets(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		secret      string // YAML body under 'secrets.token'
+		want        types.SecretConfig
+		errContains string
+	}{
+		// Valid sources.
+		{
+			name:   "file source",
+			secret: "    file: /tmp/token",
+			want:   types.SecretConfig{File: "/tmp/token"},
+		},
+		{
+			name:   "environment source",
+			secret: "    environment: UNSET_SECRET_VAR",
+			want:   types.SecretConfig{Environment: "UNSET_SECRET_VAR"},
+		},
+		{
+			name:   "x-command short form expands to exec driver",
+			secret: "    x-command: printf abc",
+			want:   types.SecretConfig{Driver: "exec", DriverOpts: map[string]string{"command": "printf abc"}},
+		},
+		{
+			name: "exec driver long form",
+			secret: `    driver: exec
+    driver_opts:
+      command: printf abc`,
+			want: types.SecretConfig{Driver: "exec", DriverOpts: map[string]string{"command": "printf abc"}},
+		},
+		// Invalid combinations.
+		{
+			name: "x-command with driver",
+			secret: `    x-command: printf abc
+    driver: exec`,
+			errContains: "cannot be combined with 'driver'",
+		},
+		{
+			name: "x-command with driver_opts",
+			secret: `    x-command: printf abc
+    driver_opts:
+      command: printf abc`,
+			errContains: "cannot be combined with 'driver'",
+		},
+		{
+			name: "x-command with file",
+			secret: `    x-command: printf abc
+    file: /tmp/token`,
+			errContains: "cannot be combined with 'file' or 'environment'",
+		},
+		{
+			name: "x-command with environment",
+			secret: `    x-command: printf abc
+    environment: SOME_VAR`,
+			errContains: "cannot be combined with 'file' or 'environment'",
+		},
+		{
+			name:        "x-command empty",
+			secret:      `    x-command: ""`,
+			errContains: "must be a non-empty string",
+		},
+		{
+			name: "unsupported driver",
+			secret: `    driver: vault
+    driver_opts:
+      key: token`,
+			errContains: "unsupported driver 'vault'",
+		},
+		{
+			name:        "exec driver without command",
+			secret:      "    driver: exec",
+			errContains: "requires 'driver_opts.command'",
+		},
+		{
+			name: "exec driver with file",
+			secret: `    driver: exec
+    driver_opts:
+      command: printf abc
+    file: /tmp/token`,
+			errContains: "cannot also define 'file' or 'environment'",
+		},
+		{
+			name:        "external not supported",
+			secret:      "    external: true",
+			errContains: "external secrets are not supported",
+		},
+		{
+			name: "external with exec driver not supported",
+			secret: `    driver: exec
+    driver_opts:
+      command: printf abc
+    external: true`,
+			errContains: "external secrets are not supported",
+		},
+		{
+			name: "file and environment mutually exclusive",
+			secret: `    file: /tmp/token
+    environment: SOME_VAR`,
+			errContains: "mutually exclusive",
+		},
+		{
+			name:        "no source",
+			secret:      "    name: token",
+			errContains: "must be set",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			content := `
+services:
+  foo:
+    image: foo
+secrets:
+  token:
+` + tt.secret + "\n"
+			project, err := LoadProjectFromContent(context.Background(), content)
+
+			if tt.errContains != "" {
+				require.Error(t, err)
+				assert.ErrorContains(t, err, tt.errContains)
+				return
+			}
+
+			require.NoError(t, err)
+			got := project.Secrets["token"]
+			got.Name = ""
+			assert.Equal(t, tt.want, got)
 		})
 	}
 }

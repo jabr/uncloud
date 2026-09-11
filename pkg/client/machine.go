@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/cenkalti/backoff/v4"
-	"github.com/psviderski/uncloud/internal/machine/api/pb"
+	"github.com/psviderski/uncloud/api/pb"
 	"github.com/psviderski/uncloud/pkg/api"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -74,9 +74,12 @@ func (cli *Client) ListMachines(ctx context.Context, filter *api.MachineFilter) 
 	return machines, nil
 }
 
-// UpdateMachine updates machine configuration in the cluster.
-func (cli *Client) UpdateMachine(ctx context.Context, req *pb.UpdateMachineRequest) (*pb.MachineInfo, error) {
-	resp, err := cli.ClusterClient.UpdateMachine(ctx, req)
+// UpdateMachine updates the configuration of the machine identified by nameOrID.
+func (cli *Client) UpdateMachine(
+	ctx context.Context, nameOrID string, req *pb.UpdateMachineRequest,
+) (*pb.MachineInfo, error) {
+	ctx = ProxySingleMachineContext(ctx, nameOrID)
+	resp, err := cli.MachineClient.UpdateMachine(ctx, req)
 	if err != nil {
 		if s, ok := status.FromError(err); ok && s.Code() == codes.NotFound {
 			return nil, api.ErrNotFound
@@ -88,19 +91,10 @@ func (cli *Client) UpdateMachine(ctx context.Context, req *pb.UpdateMachineReque
 
 // RenameMachine renames an existing machine in the cluster.
 func (cli *Client) RenameMachine(ctx context.Context, nameOrID, newName string) (*pb.MachineInfo, error) {
-	// First, resolve the machine to get its ID
-	machine, err := cli.InspectMachine(ctx, nameOrID)
-	if err != nil {
-		return nil, err
-	}
-
-	// Update the machine with the new name
 	req := &pb.UpdateMachineRequest{
-		MachineId: machine.Machine.Id,
-		Name:      &newName,
+		Name: &newName,
 	}
-
-	return cli.UpdateMachine(ctx, req)
+	return cli.UpdateMachine(ctx, nameOrID, req)
 }
 
 // WaitMachineReady waits for the machine API on the connected machine to respond.
@@ -146,4 +140,24 @@ func (cli *Client) WaitClusterReady(ctx context.Context, timeout time.Duration) 
 		return nil
 	}
 	return backoff.Retry(listMachines, boff)
+}
+
+// WaitForStoreVersion waits until the cluster store on the target machine has reached each requested actor version
+// in minVersion, with no known missing or pending transactions through those versions.
+// The context controls cancellation and the deadline. An empty minVersion requires no replication.
+// This method observes replication without initiating synchronisation.
+//
+// Corrosion may satisfy a version by applying its surviving changes or by marking it complete because its changes
+// have been superseded.
+//
+// Waiting normally makes the captured data available on the machine. However, another write may replace some of that
+// data before it arrives. Corrosion can then complete the older version without transferring the replaced data.
+// If the replacement is outside the requested versions, this method can succeed while the affected data is still
+// missing or outdated. This can happen during concurrent updates even when all machines are well connected.
+//
+// Success does not guarantee an exact snapshot or delivery of every historical value.
+// Callers that require a specific record or condition should verify it after waiting.
+func (cli *Client) WaitForStoreVersion(ctx context.Context, minVersion map[string]uint64) error {
+	_, err := cli.MachineClient.WaitForStoreVersion(ctx, &pb.WaitForStoreVersionRequest{MinVersion: minVersion})
+	return err
 }

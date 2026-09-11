@@ -12,7 +12,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const testMachineID = "machine-1"
+const (
+	testMachineID = "machine-1"
+	testLocalID   = "local"
+)
 
 type mockResolver struct {
 	records map[string][]ResolvedIP
@@ -33,20 +36,20 @@ func TestCache_RTTFor(t *testing.T) {
 	}{
 		{
 			name:     "local machine returns zero",
-			resolved: ResolvedIP{Addr: netip.MustParseAddr("10.210.0.5"), MachineID: "local"},
-			rttCache: rtt.NewCacheWithStats("local", map[string]rtt.Stats{"local": {Median: 0}}),
+			resolved: ResolvedIP{Addr: netip.MustParseAddr("10.210.0.5"), MachineID: testLocalID},
+			rttCache: rtt.NewCacheWithStats(testLocalID, map[string]rtt.Stats{testLocalID: {Median: 0}}),
 			want:     0,
 		},
 		{
 			name:     "known remote machine returns RTT",
 			resolved: ResolvedIP{Addr: netip.MustParseAddr("10.210.1.5"), MachineID: testMachineID},
-			rttCache: rtt.NewCacheWithStats("local", map[string]rtt.Stats{testMachineID: {Median: 10 * time.Millisecond}}),
+			rttCache: rtt.NewCacheWithStats(testLocalID, map[string]rtt.Stats{testMachineID: {Median: 10 * time.Millisecond}}),
 			want:     10 * time.Millisecond,
 		},
 		{
 			name:     "unknown remote machine returns UnknownRTT",
 			resolved: ResolvedIP{Addr: netip.MustParseAddr("10.210.1.5"), MachineID: "unknown"},
-			rttCache: rtt.NewCacheWithStats("local", map[string]rtt.Stats{}),
+			rttCache: rtt.NewCacheWithStats(testLocalID, map[string]rtt.Stats{}),
 			want:     rtt.UnknownRTT,
 		},
 		{
@@ -80,13 +83,13 @@ func TestServer_handleAQuery_NearestMode(t *testing.T) {
 			name: "local machine IPs come first",
 			resolved: []ResolvedIP{
 				{Addr: netip.MustParseAddr("10.210.1.5"), MachineID: "remote-1"},
-				{Addr: netip.MustParseAddr("10.210.0.5"), MachineID: "local"},
+				{Addr: netip.MustParseAddr("10.210.0.5"), MachineID: testLocalID},
 				{Addr: netip.MustParseAddr("10.210.2.5"), MachineID: "remote-2"},
 			},
-			rttCache: rtt.NewCacheWithStats("local", map[string]rtt.Stats{
-				"local":    {Median: 0},
-				"remote-1": {Median: 5 * time.Millisecond},
-				"remote-2": {Median: 10 * time.Millisecond},
+			rttCache: rtt.NewCacheWithStats(testLocalID, map[string]rtt.Stats{
+				testLocalID: {Median: 0},
+				"remote-1":  {Median: 5 * time.Millisecond},
+				"remote-2":  {Median: 10 * time.Millisecond},
 			}),
 			wantOrder: []netip.Addr{
 				netip.MustParseAddr("10.210.0.5"), // local (RTT 0)
@@ -101,7 +104,7 @@ func TestServer_handleAQuery_NearestMode(t *testing.T) {
 				{Addr: netip.MustParseAddr("10.210.1.5"), MachineID: "fast"},
 				{Addr: netip.MustParseAddr("10.210.2.5"), MachineID: "medium"},
 			},
-			rttCache: rtt.NewCacheWithStats("local", map[string]rtt.Stats{
+			rttCache: rtt.NewCacheWithStats(testLocalID, map[string]rtt.Stats{
 				"fast":   {Median: 1 * time.Millisecond},
 				"medium": {Median: 5 * time.Millisecond},
 				"slow":   {Median: 20 * time.Millisecond},
@@ -118,7 +121,7 @@ func TestServer_handleAQuery_NearestMode(t *testing.T) {
 				{Addr: netip.MustParseAddr("10.210.1.5"), MachineID: "known"},
 				{Addr: netip.MustParseAddr("10.210.2.5"), MachineID: "unknown"},
 			},
-			rttCache: rtt.NewCacheWithStats("local", map[string]rtt.Stats{
+			rttCache: rtt.NewCacheWithStats(testLocalID, map[string]rtt.Stats{
 				"known": {Median: 5 * time.Millisecond},
 			}),
 			wantOrder: []netip.Addr{
@@ -131,7 +134,7 @@ func TestServer_handleAQuery_NearestMode(t *testing.T) {
 			resolved: []ResolvedIP{
 				{Addr: netip.MustParseAddr("10.210.1.5"), MachineID: "only"},
 			},
-			rttCache: rtt.NewCacheWithStats("local", map[string]rtt.Stats{}),
+			rttCache: rtt.NewCacheWithStats(testLocalID, map[string]rtt.Stats{}),
 			wantOrder: []netip.Addr{
 				netip.MustParseAddr("10.210.1.5"),
 			},
